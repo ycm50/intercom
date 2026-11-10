@@ -1,0 +1,13 @@
+[Unit]
+Description=Cloudflare quick tunnel for intercom (-> http://127.0.0.1:8095)
+After=network.target intercom.service
+Wants=intercom.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8095
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

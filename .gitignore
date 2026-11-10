@@ -1,0 +1,33 @@
+# 构建产物
+build/
+build-*/
+dist/
+out/
+*.exe
+*.o
+*.obj
+*.gz
+
+# 第三方二进制（cloudflared 55MB，不入库）
+tools/
+
+# 运行时数据：账号哈希、ICE 配置、证书
+data/
+.cert/
+*.pem
+*.key
+*.crt
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+.idea/
+*.user
+Thumbs.db
+desktop.ini
+
+# 临时文件
+*.log
+*.tmp
+*.bak
+

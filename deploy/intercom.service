@@ -1,0 +1,15 @@
+[Unit]
+Description=Intercom server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/intercom
+ExecStart=/opt/intercom/intercom-server --port 8095
+Restart=always
+RestartSec=3
+User=root
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

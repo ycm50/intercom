@@ -1,0 +1,1382 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#0b1220">
+<meta name="format-detection" content="telephone=no">
+<title>对讲机</title>
+<style>
+:root{
+  --bg:#0b1220; --bg2:#111a2c; --line:#1f2b42; --fg:#e8eefc; --dim:#8ea0c0;
+  --accent:#3b82f6; --accent2:#22c55e; --danger:#ef4444; --warn:#f59e0b;
+  --safe-b:env(safe-area-inset-bottom,0px); --safe-t:env(safe-area-inset-top,0px);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+  font:15px/1.5 -apple-system,"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+  overscroll-behavior:none}
+body{display:flex;flex-direction:column;height:100dvh;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:none;padding:0;cursor:pointer}
+input{font:inherit;color:inherit}
+.hidden{display:none !important}
+.screen{flex:1;display:flex;flex-direction:column;min-height:0}
+
+/* 登录 */
+#screen-login{align-items:center;justify-content:center;padding:24px}
+.brand{font-size:34px;font-weight:700;letter-spacing:2px;margin-bottom:6px}
+.slogan{color:var(--dim);font-size:13px;margin-bottom:28px;text-align:center}
+.card{width:100%;max-width:380px;background:var(--bg2);border:1px solid var(--line);
+  border-radius:18px;padding:20px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12px;color:var(--dim);margin-bottom:6px}
+.field input{width:100%;padding:13px 14px;border-radius:12px;border:1px solid var(--line);
+  background:#0d1626;outline:none;font-size:16px}
+.field input:focus{border-color:var(--accent)}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+  padding:14px;border-radius:12px;background:var(--accent);color:#fff;font-weight:600;font-size:16px}
+.btn:active{transform:scale(.985)}
+.btn.ghost{background:#182338;color:var(--fg)}
+.btn.danger{background:var(--danger)}
+.tip{margin-top:14px;color:var(--dim);font-size:12px;line-height:1.7}
+.err{color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px}
+
+/* 大厅 */
+.topbar{display:flex;align-items:center;gap:10px;padding:calc(12px + var(--safe-t)) 14px 12px;
+  border-bottom:1px solid var(--line);background:var(--bg2)}
+.topbar .title{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:3px 8px}
+.iconbtn{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+  background:#182338}
+.iconbtn:active{background:#22304a}
+.list{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px 12px}
+.user-row{display:flex;align-items:center;gap:12px;padding:12px;border-radius:14px;background:var(--bg2);
+  border:1px solid var(--line);margin-bottom:10px}
+.avatar{width:42px;height:42px;border-radius:50%;background:#25406b;display:flex;align-items:center;
+  justify-content:center;font-weight:700;color:#cfe0ff;flex:none}
+.user-meta{flex:1;min-width:0}
+.user-name{font-weight:600}
+.user-sub{font-size:12px;color:var(--dim)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent2);flex:none}
+.dot.busy{background:var(--warn)}
+.empty{color:var(--dim);text-align:center;padding:40px 10px;font-size:13px}
+
+/* 聊天 */
+.msgs{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 12px 6px;display:flex;
+  flex-direction:column;gap:10px}
+.bubble{max-width:78%;padding:9px 12px;border-radius:14px;background:#182338;align-self:flex-start;
+  word-break:break-word;white-space:pre-wrap}
+.bubble.me{align-self:flex-end;background:#1d4ed8}
+.bubble .meta{font-size:11px;color:#9fb3d6;margin-top:4px}
+.bubble audio,.bubble video{max-width:100%;border-radius:10px;display:block}
+.bubble video{width:220px;background:#000}
+.sys{text-align:center;color:var(--dim);font-size:12px;padding:4px}
+.composer{display:flex;gap:8px;align-items:flex-end;padding:10px 10px calc(10px + var(--safe-b));
+  border-top:1px solid var(--line);background:var(--bg2)}
+.composer textarea{flex:1;resize:none;min-height:42px;max-height:120px;padding:11px 12px;border-radius:12px;
+  border:1px solid var(--line);background:#0d1626;outline:none;font-size:16px;line-height:1.35}
+.composer textarea:focus{border-color:var(--accent)}
+.send{width:46px;height:44px;border-radius:12px;background:var(--accent);display:flex;align-items:center;
+  justify-content:center;flex:none}
+.rec{width:46px;height:44px;border-radius:12px;background:#182338;display:flex;align-items:center;
+  justify-content:center;flex:none}
+.rec.on{background:var(--danger);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.55}}
+.diagbtn{position:absolute;right:12px;top:calc(52px + var(--safe-t));z-index:4;width:34px;height:34px;
+  border-radius:50%;background:rgba(30,41,59,.85);color:#cfe0ff;font-size:16px;
+  display:flex;align-items:center;justify-content:center}
+.diagpanel{position:absolute;left:10px;right:10px;bottom:96px;max-height:44vh;overflow:auto;z-index:5;
+  background:rgba(6,10,20,.92);border:1px solid var(--line);border-radius:12px;padding:10px 12px;
+  font-size:11px;line-height:1.5;color:#cfe0ff;white-space:pre-wrap;margin:0}
+.perm-bar{padding:8px 14px;background:#4a1d1d;color:#fecaca;font-size:12px;line-height:1.5}
+.perm-bar:empty{display:none}
+.recdot{position:absolute;left:50%;bottom:96px;transform:translateX(-50%);background:#7f1d1d;
+  color:#fee2e2;padding:6px 14px;border-radius:999px;font-size:13px}
+
+/* 来电 / 通话 */
+.overlay{position:fixed;inset:0;background:rgba(6,10,20,.94);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:18px;z-index:50;padding:24px;text-align:center}
+.overlay .who{font-size:22px;font-weight:700}
+.overlay .sub{color:var(--dim)}
+.overlay .row{display:flex;gap:18px;margin-top:12px}
+.circbtn{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  background:#182338;font-size:24px}
+.circbtn.accept{background:var(--accent2)}
+.circbtn.hang{background:var(--danger)}
+#call-layer{background:#05080f;justify-content:stretch;align-items:stretch;padding:0}
+#remote-audio{display:none}
+#remote-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#05080f}
+#local-video{position:absolute;right:12px;top:calc(12px + var(--safe-t));width:104px;height:150px;
+  object-fit:cover;border-radius:12px;border:1px solid #1f2b42;background:#000;z-index:2}
+.call-top{position:absolute;left:0;right:0;top:0;padding:calc(10px + var(--safe-t)) 14px 10px;
+  display:flex;align-items:center;gap:10px;z-index:3;
+  background:linear-gradient(180deg,rgba(0,0,0,.55),transparent)}
+.call-top .name{font-weight:600;flex:1}
+.call-bottom{position:absolute;left:0;right:0;bottom:0;padding:16px 16px calc(20px + var(--safe-b));
+  display:flex;justify-content:center;gap:16px;z-index:3;
+  background:linear-gradient(0deg,rgba(0,0,0,.6),transparent)}
+.call-bottom .circbtn{width:56px;height:56px;background:rgba(30,41,59,.85)}
+.call-bottom .circbtn.off{background:var(--warn);color:#111}
+.call-bottom .circbtn.hang{background:var(--danger)}
+.unlock{position:absolute;left:50%;bottom:120px;transform:translateX(-50%);background:#1d4ed8;
+  padding:10px 18px;border-radius:999px;font-size:13px;z-index:4}
+.avatar-big{width:110px;height:110px;border-radius:50%;background:#25406b;display:flex;
+  align-items:center;justify-content:center;font-size:44px;font-weight:700}
+</style>
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="screen-login" class="screen">
+  <div class="brand">对讲机</div>
+  <div class="slogan">仅通过 cloudflared 隧道访问 · 内容不落盘</div>
+  <div class="card">
+    <div class="field"><label>账号</label>
+      <input id="in-user" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="用户名"></div>
+    <div class="field"><label>密码</label>
+      <input id="in-pass" type="password" autocomplete="current-password" placeholder="密码"></div>
+    <button id="btn-login" class="btn">进入</button>
+    <div id="login-err" class="err"></div>
+    <div class="tip">账号由服务端命令行注册。<br>本服务不保存任何聊天、语音、视频内容。</div>
+  </div>
+</div>
+
+<!-- 大厅 -->
+<div id="screen-lobby" class="screen hidden">
+  <div class="topbar">
+    <div class="title" id="lobby-title">在线</div>
+    <div class="badge" id="online-count">0 人</div>
+    <button class="iconbtn" id="btn-refresh" title="刷新">⟳</button>
+    <button class="iconbtn" id="btn-logout" title="退出">⎋</button>
+  </div>
+  <div class="list" id="user-list"><div class="empty">暂无其他在线用户</div></div>
+</div>
+
+<!-- 聊天 -->
+<div id="screen-chat" class="screen hidden">
+  <div class="topbar">
+    <button class="iconbtn" id="btn-back">‹</button>
+    <div class="title" id="chat-title">对方</div>
+    <button class="iconbtn" id="btn-audio-call" title="语音通话">☎</button>
+    <button class="iconbtn" id="btn-video-call" title="视频通话">▣</button>
+  </div>
+  <div class="msgs" id="msgs"></div>
+  <div class="composer">
+    <button class="rec" id="btn-rec" title="按住录音">🎙</button>
+    <textarea id="in-msg" rows="1" placeholder="输入消息…"></textarea>
+    <label class="rec" for="file-video" title="发送视频片段">📎</label>
+    <input id="file-video" type="file" accept="video/*" class="hidden">
+    <button class="send" id="btn-send" title="发送">➤</button>
+  </div>
+</div>
+
+<!-- 来电 -->
+<div id="incoming" class="overlay hidden">
+  <div class="avatar-big" id="in-avatar">A</div>
+  <div><div class="who" id="in-who">对方</div><div class="sub" id="in-kind">视频来电</div></div>
+  <div class="row">
+    <div style="text-align:center"><div class="circbtn hang" id="btn-reject">✕</div><div class="sub">拒绝</div></div>
+    <div style="text-align:center"><div class="circbtn accept" id="btn-accept">✓</div><div class="sub">接听</div></div>
+  </div>
+</div>
+
+<!-- 通话 -->
+<div id="call-layer" class="overlay hidden">
+  <video id="remote-video" autoplay playsinline muted></video>
+  <audio id="remote-audio" autoplay playsinline></audio>
+  <video id="local-video" autoplay playsinline muted></video>
+  <div class="call-top">
+    <div class="name" id="call-name">通话中</div>
+    <div class="badge" id="call-timer">00:00</div>
+  </div>
+  <button class="unlock hidden" id="btn-unlock">点击开启声音</button>
+  <button class="diagbtn" id="btn-diag" title="诊断">ⓘ</button>
+  <pre class="diagpanel hidden" id="diag-panel"></pre>
+  <div class="call-bottom">
+    <div class="circbtn" id="btn-mute" title="静音">🎤</div>
+    <div class="circbtn" id="btn-cam" title="摄像头">📷</div>
+    <div class="circbtn hang" id="btn-hangup" title="挂断">✕</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var S = {
+    ws: null, token: (sessionStorage.getItem('ic_token') || ''),
+    user: (sessionStorage.getItem('ic_user') || ''), display: '',
+    online: [], peer: null, peerDisplay: '',
+    pc: null, localStream: null, callMedia: 'audio', polite: true,
+    pendingCandidates: [], pendingSignals: [], inCall: false, remoteTracks: {},
+    mediaRecorder: null, recStream: null, recStart: 0, recTimer: null,
+    callStart: 0, timer: null, connected: false, retry: 0, seq: 0
+  };
+
+  /* ------------------------------ 基础工具 ------------------------------ */
+  function show(id) {
+    ['screen-login', 'screen-lobby', 'screen-chat'].forEach(function (k) {
+      var el = $(k); if (!el) return; el.classList.toggle('hidden', k !== id);
+    });
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
+  function hhmm(ts) {
+    var d = new Date((ts || Date.now() / 1000) * 1000);
+    var p = function (n) { return n < 10 ? '0' + n : '' + n; };
+    return p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function sysNote(text) {
+    var box = $('msgs'); if (!box) return;
+    var d = document.createElement('div');
+    d.className = 'sys'; d.textContent = text;
+    box.appendChild(d); box.scrollTop = box.scrollHeight;
+  }
+
+  /* ------------------------------ WebSocket ------------------------------ */
+  function wsUrl() {
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    return proto + location.host + '/ws';
+  }
+  function connect(authPayload) {
+    try { if (S.ws) { S.ws.onclose = null; S.ws.close(); } } catch (e) {}
+    var ws = new WebSocket(wsUrl());
+    S.ws = ws;
+    ws.onopen = function () {
+      S.retry = 0;
+      if (authPayload) ws.send(JSON.stringify(authPayload));
+    };
+    ws.onmessage = function (ev) {
+      var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      onMessage(msg);
+    };
+    ws.onclose = function () {
+      S.connected = false;
+      if (S.token && S.user) {
+        var delay = Math.min(8000, 600 * Math.pow(2, S.retry++));
+        setTimeout(function () { connect({ t: 'auth', token: S.token }); }, delay);
+      }
+    };
+    ws.onerror = function () {};
+  }
+  function send(obj) {
+    if (!S.ws || S.ws.readyState !== 1) return false;
+    S.ws.send(JSON.stringify(obj));
+    return true;
+  }
+
+  function onMessage(msg) {
+    switch (msg.t) {
+      case 'hello':
+        break;
+      case 'auth-ok':
+        S.user = msg.user; S.display = msg.display; S.token = msg.token;
+        sessionStorage.setItem('ic_token', msg.token);
+        sessionStorage.setItem('ic_user', msg.user);
+        S.connected = true;
+        enterLobby();
+        break;
+      case 'auth-fail':
+        sessionStorage.removeItem('ic_token');
+        S.token = '';
+        show('screen-login');
+        $('login-err').textContent = msg.reason || '登录失败';
+        break;
+      case 'users':
+        S.online = msg.list || [];
+        renderUsers();
+        break;
+      case 'incoming':
+        onIncoming(msg);
+        break;
+      case 'incoming-cancel':
+        stopRing();
+        $('incoming').classList.add('hidden');
+        break;
+      case 'call-start':
+        startCallMedia(msg);
+        break;
+      case 'call-end':
+        notify(msg.reason === 'peer-timeout' ? '对方长时间未重连，通话结束' : '通话已结束');
+        endCall();
+        break;
+      case 'call-fail':
+        notify(msg.reason || '呼叫失败');
+        endCall();
+        break;
+      case 'call-peer-lost':
+        onPeerLost(msg);
+        break;
+      case 'call-peer-back':
+        onPeerBack(msg);
+        break;
+      case 'call-resume':
+        onCallResume(msg);
+        break;
+      case 'signal':
+        onSignal(msg.data);
+        break;
+      case 'chat':
+        addBubble(msg.text, false, msg.ts, msg.display);
+        break;
+      case 'media':
+        addMediaBubble(msg);
+        break;
+      case 'typing':
+        break;
+      case 'error':
+        notify(msg.reason || '出错了');
+        break;
+      default:
+        break;
+    }
+  }
+
+  function notify(text) {
+    if ($('screen-chat').classList.contains('hidden')) {
+      $('login-err').textContent = text;
+    } else {
+      sysNote(text);
+    }
+  }
+
+  /* ------------------------------ 登录 ------------------------------ */
+  $('btn-login').addEventListener('click', function () {
+    var user = $('in-user').value.trim();
+    var pass = $('in-pass').value;
+    $('login-err').textContent = '';
+    if (!user || !pass) { $('login-err').textContent = '请输入账号与密码'; return; }
+    sessionStorage.removeItem('ic_token');
+    S.token = '';
+    connect({ t: 'auth', user: user, pass: pass });
+  });
+  $('in-pass').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') $('btn-login').click();
+  });
+
+  function enterLobby() {
+    $('lobby-title').textContent = '在线 · ' + S.display;
+    show('screen-lobby');
+    send({ t: 'users' });
+  }
+
+  /* ------------------------------ 大厅 ------------------------------ */
+  function renderUsers() {
+    var box = $('user-list');
+    var others = S.online.filter(function (u) { return u.user !== S.user; });
+    $('online-count').textContent = S.online.length + ' 人';
+    if (!others.length) {
+      box.innerHTML = '<div class="empty">暂无其他在线用户<br>让对方登录后点击刷新</div>';
+      return;
+    }
+    box.innerHTML = others.map(function (u) {
+      return '<div class="user-row" data-user="' + escapeHtml(u.user) + '">' +
+        '<div class="avatar">' + escapeHtml((u.display || u.user).slice(0, 1).toUpperCase()) + '</div>' +
+        '<div class="user-meta"><div class="user-name">' + escapeHtml(u.display || u.user) + '</div>' +
+        '<div class="user-sub">' + (u.busy ? '通话中' : '空闲') + '</div></div>' +
+        '<div class="dot' + (u.busy ? ' busy' : '') + '"></div></div>';
+    }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('.user-row'), function (row) {
+      row.addEventListener('click', function () { openChat(row.dataset.user); });
+    });
+  }
+  $('btn-refresh').addEventListener('click', function () { send({ t: 'users' }); });
+  $('btn-logout').addEventListener('click', function () {
+    sessionStorage.removeItem('ic_token');
+    S.token = '';
+    try { S.ws.close(); } catch (e) {}
+    show('screen-login');
+  });
+
+  /* ------------------------------ 聊天 ------------------------------ */
+  function openChat(user) {
+    S.peer = user;
+    var found = S.online.filter(function (u) { return u.user === user; })[0];
+    S.peerDisplay = (found && found.display) || user;
+    $('chat-title').textContent = S.peerDisplay;
+    $('msgs').innerHTML = '';
+    sysNote('消息只存在于双方内存，刷新即消失');
+    show('screen-chat');
+    permissionHint();
+    send({ t: 'users' });
+  }
+  $('btn-back').addEventListener('click', function () {
+    if (S.pc) hangup();
+    show('screen-lobby');
+    send({ t: 'users' });
+  });
+
+  function addBubble(text, mine, ts, who) {
+    var box = $('msgs');
+    var d = document.createElement('div');
+    d.className = 'bubble' + (mine ? ' me' : '');
+    d.textContent = text;
+    var m = document.createElement('div');
+    m.className = 'meta';
+    m.textContent = (mine ? '我' : (who || S.peerDisplay)) + ' · ' + hhmm(ts);
+    d.appendChild(m);
+    box.appendChild(d);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function addMediaBubble(msg) {
+    var box = $('msgs');
+    var mine = msg.from === S.user;
+    var d = document.createElement('div');
+    d.className = 'bubble' + (mine ? ' me' : '');
+    var src = 'data:' + (msg.mime || 'application/octet-stream') + ';base64,' + msg.data;
+    if (msg.kind === 'voice') {
+      var au = document.createElement('audio');
+      au.controls = true; au.preload = 'metadata'; au.src = src;
+      d.appendChild(au);
+    } else if (msg.kind === 'video') {
+      var vd = document.createElement('video');
+      vd.controls = true; vd.playsInline = true; vd.preload = 'metadata'; vd.src = src;
+      d.appendChild(vd);
+    } else {
+      var a = document.createElement('a');
+      a.href = src; a.download = msg.name || 'file';
+      a.textContent = '下载 ' + (msg.name || '文件');
+      d.appendChild(a);
+    }
+    if (msg.caption) {
+      var c = document.createElement('div');
+      c.textContent = msg.caption;
+      d.appendChild(c);
+    }
+    var m = document.createElement('div');
+    m.className = 'meta';
+    m.textContent = (mine ? '我' : (msg.display || S.peerDisplay)) + ' · ' + hhmm(msg.ts);
+    d.appendChild(m);
+    box.appendChild(d);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function sendText() {
+    var el = $('in-msg');
+    var text = el.value.trim();
+    if (!text || !S.peer) return;
+    if (!send({ t: 'chat', to: S.peer, text: text })) { notify('连接已断开'); return; }
+    addBubble(text, true, Date.now() / 1000);
+    el.value = ''; el.style.height = 'auto';
+  }
+  $('btn-send').addEventListener('click', sendText);
+  $('in-msg').addEventListener('input', function () {
+    this.style.height = 'auto';
+    this.style.height = Math.min(120, this.scrollHeight) + 'px';
+  });
+  $('in-msg').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); }
+  });
+
+  /* ------------------------------ 语音消息 ------------------------------ */
+  function pickMime() {
+    var cands = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+    for (var i = 0; i < cands.length; i++) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(cands[i])) {
+        return cands[i];
+      }
+    }
+    return '';
+  }
+  function startRec() {
+    if (S.mediaRecorder) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      notify('当前浏览器不支持录音（需要 https 且为 Chrome）'); return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      S.recStream = stream;
+      var mime = pickMime();
+      var opts = mime ? { mimeType: mime } : {};
+      var rec = new MediaRecorder(stream, opts);
+      var chunks = [];
+      rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+      rec.onstop = function () {
+        var ms = Date.now() - S.recStart;
+        var type = rec.mimeType || mime || 'audio/webm';
+        var blob = new Blob(chunks, { type: type });
+        S.mediaRecorder = null;
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        S.recStream = null;
+        $('btn-rec').classList.remove('on');
+        clearInterval(S.recTimer);
+        var label = document.querySelector('.recdot');
+        if (label) label.remove();
+        if (ms < 500 || !blob.size) { sysNote('录音太短'); return; }
+        blobToBase64(blob, function (b64) {
+          var ok = send({
+            t: 'media', to: S.peer, kind: 'voice',
+            mime: type.split(';')[0], size: blob.size, duration: Math.round(ms / 1000),
+            name: 'voice.' + (type.indexOf('mp4') >= 0 ? 'm4a' : 'webm'), data: b64
+          });
+          if (!ok) { notify('连接已断开'); return; }
+          sysNote('语音已发送');
+        });
+      };
+      S.mediaRecorder = rec;
+      S.recStart = Date.now();
+      rec.start();
+      $('btn-rec').classList.add('on');
+      var d = document.createElement('div');
+      d.className = 'recdot'; d.textContent = '录音中 0s · 点击停止';
+      document.body.appendChild(d);
+      S.recTimer = setInterval(function () {
+        var s = Math.round((Date.now() - S.recStart) / 1000);
+        d.textContent = '录音中 ' + s + 's · 点击停止';
+        if (s >= 60) stopRec();
+      }, 200);
+    }).catch(function (err) {
+      notify('无法使用麦克风：' + (err && err.name ? err.name : ''));
+    });
+  }
+  function stopRec() {
+    if (S.mediaRecorder && S.mediaRecorder.state !== 'inactive') S.mediaRecorder.stop();
+  }
+  $('btn-rec').addEventListener('click', function () {
+    if (S.mediaRecorder) stopRec(); else startRec();
+  });
+
+  function blobToBase64(blob, cb) {
+    var fr = new FileReader();
+    fr.onload = function () {
+      var s = String(fr.result || '');
+      cb(s.slice(s.indexOf(',') + 1));
+    };
+    fr.readAsDataURL(blob);
+  }
+
+  /* ------------------------------ 视频片段 ------------------------------ */
+  $('file-video').addEventListener('change', function () {
+    var f = this.files && this.files[0];
+    this.value = '';
+    if (!f) return;
+    if (f.size > 10 * 1024 * 1024) { notify('视频片段不能超过 10MB'); return; }
+    blobToBase64(f, function (b64) {
+      var ok = send({
+        t: 'media', to: S.peer, kind: 'video', mime: f.type || 'video/mp4',
+        size: f.size, name: f.name, duration: 0, data: b64
+      });
+      if (!ok) notify('连接已断开');
+      else sysNote('视频片段已发送');
+    });
+  });
+
+  /* ------------------------------ 通话 ------------------------------ */
+  var wakeLock = null;
+  async function keepScreenAwake() {
+    try {
+      if ('wakeLock' in navigator && !wakeLock) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', function () { wakeLock = null; });
+      }
+    } catch (e) { /* 不支持或无权限，忽略 */ }
+  }
+  function releaseScreenAwake() {
+    if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+  }
+  document.addEventListener('visibilitychange', function () {
+    // 回到前台时重新申请：浏览器在页面隐藏时会自动释放
+    if (!document.hidden && S.inCall) {
+      keepScreenAwake();
+      resumeAllVideos();
+    }
+  });
+
+  var ICE = {
+    iceServers: [
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'stun:stun.l.google.com:19302' }
+    ]
+  };
+  // 服务端可通过 data/ice.json 下发 TURN 等配置
+  fetch('/api/info').then(function (r) { return r.json(); }).then(function (info) {
+    if (info && info.ice && info.ice.iceServers && info.ice.iceServers.length) ICE = info.ice;
+  }).catch(function () {});
+
+  function rtcConfig() { return ICE; }
+
+  $('btn-audio-call').addEventListener('click', function () { callPeer('audio'); });
+  $('btn-video-call').addEventListener('click', function () { callPeer('video'); });
+
+  // ---------------- 媒体权限 ----------------
+  // 关键：必须在「用户点击」的手势上下文里立刻申请摄像头/麦克风，
+  // 否则 Android Chrome 会因为不是用户手势而直接拒绝或不弹权限框。
+  function acquireLocalMedia(media) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return Promise.reject(new Error('unsupported'));
+    }
+    var audioC = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+    function get(c) { return navigator.mediaDevices.getUserMedia(c); }
+
+    if (media !== 'video') {
+      return get({ audio: audioC }).then(function (s) { return { stream: s, media: 'audio' }; });
+    }
+    // 视频：用 ideal 而不是精确约束，很多安卓机型精确匹配会拿到黑帧甚至失败。
+    // 逐级放宽：正面摄像头 -> 任意摄像头 -> 最低画质 -> 纯语音
+    var want = {
+      audio: audioC,
+      video: { facingMode: { ideal: 'user' }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24, max: 30 } }
+    };
+    return get(want).then(function (s) {
+      return { stream: s, media: 'video' };
+    }).catch(function () {
+      return get({ audio: audioC, video: { width: { ideal: 640 }, height: { ideal: 480 } } }).then(function (s) {
+        return { stream: s, media: 'video' };
+      });
+    }).catch(function () {
+      return get({ audio: audioC, video: true }).then(function (s) {
+        return { stream: s, media: 'video' };
+      });
+    }).catch(function (err) {
+      return get({ audio: audioC }).then(function (s) {
+        return { stream: s, media: 'audio', fallback: (err && err.name) || 'video-failed' };
+      });
+    });
+  }
+
+  function mediaErrorMessage(err) {
+    var n = err && err.name ? err.name : '';
+    if (n === 'NotAllowedError' || n === 'PermissionDeniedError') {
+      return '浏览器拒绝了麦克风/摄像头权限。请点地址栏左侧的锁图标，允许「麦克风」「摄像头」后重试';
+    }
+    if (n === 'NotFoundError' || n === 'DevicesNotFoundError') return '没有找到麦克风或摄像头设备';
+    if (n === 'NotReadableError' || n === 'TrackStartError') return '麦克风/摄像头被其它应用占用，请关掉其它应用后重试';
+    if (n === 'OverconstrainedError' || n === 'ConstraintNotSatisfiedError') return '摄像头不支持当前参数，请重试';
+    if (n === 'SecurityError') return '当前页面不是安全上下文，必须通过 https 访问';
+    if (n === 'unsupported') return '当前浏览器不支持通话，请使用手机 Chrome 打开';
+    return '无法使用麦克风/摄像头' + (n ? '（' + n + '）' : '');
+  }
+
+  // 进入聊天时提示权限状态，避免点了通话才失败
+  function permissionHint() {
+    var bar = $('perm-bar');
+    if (!bar) return;
+    if (!navigator.permissions || !navigator.permissions.query) return;
+    var denied = [];
+    var names = { camera: '摄像头', microphone: '麦克风' };
+    ['camera', 'microphone'].forEach(function (name) {
+      navigator.permissions.query({ name: name }).then(function (st) {
+        if (st.state === 'denied' && denied.indexOf(name) < 0) denied.push(name);
+        if (st.state === 'denied') {
+          bar.textContent = '已拒绝' + denied.map(function (n) { return names[n]; }).join('、') +
+            '权限：点地址栏左侧的锁图标 → 网站设置 → 允许' + denied.map(function (n) { return names[n]; }).join('和') +
+            '，然后刷新页面';
+          bar.classList.remove('hidden');
+        } else {
+          bar.classList.add('hidden');
+        }
+      }).catch(function () {});
+    });
+  }
+
+  // 点击即申请权限，拿到流之后再真正呼叫
+  function callPeer(media) {
+    if (!S.peer) return;
+    if (S.calling) return;
+    S.calling = true;
+    sysNote(media === 'video' ? '正在申请摄像头与麦克风权限…请点击「允许」' : '正在申请麦克风权限…请点击「允许」');
+    acquireLocalMedia(media).then(function (got) {
+      S.calling = false;
+    S.remoteTracks = {};
+    clearInterval(diagTimer);
+      if (got.fallback) notify('摄像头不可用，本次使用语音通话');
+      S.localStream = got.stream;
+      S.callMedia = got.media;
+      $('local-video').classList.toggle('hidden', got.media !== 'video');
+      attachStream($('local-video'), got.stream);
+      if (!send({ t: 'call', to: S.peer, media: got.media })) { notify('连接已断开'); return; }
+      sysNote('正在呼叫…');
+    }).catch(function (err) {
+      S.calling = false;
+      var bar = $('perm-bar');
+      if (bar) { bar.textContent = mediaErrorMessage(err); bar.classList.remove('hidden'); }
+      notify(mediaErrorMessage(err));
+    });
+  }
+
+  var ringCtx = null, ringTimer = null;
+
+  function startRing() {
+    if (navigator.vibrate) navigator.vibrate([300, 200, 300, 200, 300]);
+    try {
+      if (!ringCtx) ringCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (ringCtx.state === 'suspended') ringCtx.resume();
+      stopRing();
+      var beep = function () {
+        var o = ringCtx.createOscillator();
+        var g = ringCtx.createGain();
+        o.type = 'sine'; o.frequency.value = 880;
+        g.gain.value = 0.12;
+        o.connect(g); g.connect(ringCtx.destination);
+        o.start();
+        o.stop(ringCtx.currentTime + 0.35);
+      };
+      beep();
+      ringTimer = setInterval(beep, 900);
+    } catch (e) { /* 部分浏览器需要用户手势后才能出声 */ }
+  }
+  function stopRing() {
+    if (ringTimer) { clearInterval(ringTimer); ringTimer = null; }
+    if (navigator.vibrate) navigator.vibrate(0);
+  }
+
+  function onIncoming(msg) {
+    S.pendingFrom = msg.from;
+    S.pendingDisplay = msg.display || msg.from;
+    S.pendingMedia = msg.media || 'audio';
+    $('in-who').textContent = S.pendingDisplay;
+    $('in-avatar').textContent = (S.pendingDisplay || '?').slice(0, 1).toUpperCase();
+    $('in-kind').textContent = (S.pendingMedia === 'video' ? '视频来电' : '语音来电');
+    $('incoming').classList.remove('hidden');
+    startRing();
+  }
+  $('btn-accept').addEventListener('click', function () {
+    stopRing();
+    $('incoming').classList.add('hidden');
+    S.peer = S.pendingFrom; S.peerDisplay = S.pendingDisplay; S.callMedia = S.pendingMedia;
+    $('chat-title').textContent = S.peerDisplay;
+    show('screen-chat');
+    sysNote('正在申请摄像头/麦克风权限…');
+    // 接听同样是用户手势，先把权限和本地流拿到，再通知服务端建立通话
+    acquireLocalMedia(S.pendingMedia).then(function (got) {
+      S.localStream = got.stream;
+      S.callMedia = got.media;
+      $('local-video').classList.toggle('hidden', got.media !== 'video');
+      attachStream($('local-video'), got.stream);
+      if (got.fallback) notify('摄像头不可用，本次使用语音通话');
+      send({ t: 'accept' });
+    }).catch(function (err) {
+      notify(mediaErrorMessage(err));
+      send({ t: 'reject' });
+    });
+  });
+  $('btn-reject').addEventListener('click', function () {
+    stopRing();
+    $('incoming').classList.add('hidden');
+    send({ t: 'reject' });
+  });
+
+  function startCallMedia(msg) {
+    S.peer = msg.peer; S.peerDisplay = msg.display || msg.peer;
+    S.callMedia = msg.media || 'audio';
+    S.polite = !msg.initiator;
+    S.initiator = !!msg.initiator;
+    S.iceRestarts = 0;
+    $('chat-title').textContent = S.peerDisplay;
+    show('screen-chat');
+    $('call-name').textContent = S.peerDisplay;
+    $('call-layer').classList.remove('hidden');
+    S.remoteTracks = {};
+    $('remote-video').srcObject = null;
+    $('remote-audio').srcObject = null;
+    if (AE.source) { try { AE.source.disconnect(); } catch (e) {} AE.source = null; }
+    AE.stream = null;
+    ensureAudioContext();
+    unlockAudio();
+    $('local-video').classList.toggle('hidden', S.callMedia !== 'video');
+    S.callStart = Date.now();
+    S.localStuck = 0;
+    S.remoteStuck = 0;
+    clearInterval(S.watchdog);
+    S.watchdog = setInterval(videoWatchdog, 1200);
+    setTimeout(resumeAllVideos, 50);
+    clearInterval(S.timer);
+    S.timer = setInterval(function () {
+      var s = Math.round((Date.now() - S.callStart) / 1000);
+      var p = function (n) { return n < 10 ? '0' + n : '' + n; };
+      $('call-timer').textContent = p(Math.floor(s / 60)) + ':' + p(s % 60);
+    }, 500);
+
+    S.inCall = true;
+    keepScreenAwake();
+
+    // 主叫方在点击时已经申请过权限（S.localStream 就绪）；
+    // 接听方在「接听」按钮里也已申请。这里只负责补一次兜底。
+    function beginWithStream(stream) {
+      if (!S.inCall) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+      S.localStream = stream;
+      setupPeer();
+      stream.getTracks().forEach(function (t) { S.pc.addTrack(t, stream); });
+      var queued = S.pendingSignals.slice();
+      S.pendingSignals = [];
+      queued.forEach(function (d) { applySignal(d); });
+      if (msg.initiator) makeOffer();
+    }
+
+    if (S.localStream && S.localStream.getAudioTracks().length) {
+      beginWithStream(S.localStream);
+      return;
+    }
+    acquireLocalMedia(S.callMedia).then(function (got) {
+      S.callMedia = got.media;
+      if (got.fallback) notify('摄像头不可用，本次使用语音通话');
+      beginWithStream(got.stream);
+    }).catch(function (err) {
+      notify(mediaErrorMessage(err));
+      send({ t: 'hangup', reason: 'no-media' });
+      endCall();
+    });
+  }
+
+  function setupPeer() {
+    if (S.pc) { try { S.pc.close(); } catch (e) {} }
+    var pc = new RTCPeerConnection(rtcConfig());
+    S.pc = pc;
+    pc.ontrack = function (ev) {
+      var v = $('remote-video');
+      var stream = (ev.streams && ev.streams[0]) ? ev.streams[0] : null;
+      if (!stream) {
+        // 没有 streams 时把轨道合并到一个 MediaStream 里，避免音视频互相覆盖
+        if (!S.remoteStream) S.remoteStream = new MediaStream();
+        stream = S.remoteStream;
+        if (!stream.getTracks().some(function (t) { return t.id === ev.track.id; })) {
+          stream.addTrack(ev.track);
+        }
+      }
+      S.remoteTracks[ev.track.kind] = ev.track;
+      if (ev.track.kind === 'audio') playRemoteAudio(stream);
+      else attachStream(v, stream);
+      ev.track.onunmute = function () {
+        S.remoteTracks[ev.track.kind] = ev.track;
+        if (ev.track.kind === 'audio') playRemoteAudio(stream);
+        else attachStream(v, stream);
+      };
+    };
+    pc.onicecandidate = function (ev) {
+      if (ev.candidate) send({ t: 'signal', data: { candidate: ev.candidate.toJSON() } });
+    };
+    pc.onconnectionstatechange = function () {
+      if (!S.inCall) return;
+      if (pc.connectionState === 'connected') {
+        S.peerLost = false;
+        S.iceRestarts = 0;
+        $('call-name').textContent = S.peerDisplay;
+        return;
+      }
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        if (S.peerLost) return;
+        S.peerLost = true;
+        $('call-name').textContent = (S.peerDisplay || '对方') + ' 连接中断，重连中…';
+        tryIceRestart(pc);
+      }
+    };
+    return pc;
+  }
+
+  // 网络切换（Wi-Fi <-> 4G）会导致旧候选失效，这里做 ICE 重启重新打通
+  function tryIceRestart(pc) {
+    if (!pc || pc !== S.pc) return;
+    if ((S.iceRestarts || 0) >= 3) {
+      sysNote('多次重连失败，可以挂断后重新拨打');
+      return;
+    }
+    S.iceRestarts = (S.iceRestarts || 0) + 1;
+    var delay = 1000 * S.iceRestarts;
+    setTimeout(function () {
+      if (!S.inCall || pc !== S.pc || !S.initiator) {
+        // 非主叫方等待对方重新发起
+        return;
+      }
+      try {
+        if (pc.restartIce) pc.restartIce();
+        pc.createOffer({ iceRestart: true }).then(function (offer) {
+          return pc.setLocalDescription(offer);
+        }).then(function () {
+          send({ t: 'signal', data: { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } } });
+        }).catch(function () {});
+      } catch (e) { /* ignore */ }
+    }, delay);
+  }
+
+  function makeOffer() {
+    var pc = S.pc; if (!pc) return;
+    pc.createOffer().then(function (offer) {
+      return pc.setLocalDescription(offer);
+    }).then(function () {
+      send({ t: 'signal', data: { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } } });
+    }).catch(function (e) { sysNote('协商失败'); });
+  }
+
+  function onSignal(data) {
+    if (!data || !S.inCall) return;
+    // 本地流还没拿到时信令先排队，等 PeerConnection 建好再处理
+    if (!S.pc) { S.pendingSignals.push(data); return; }
+    applySignal(data);
+  }
+
+  function applySignal(data) {
+    var pc = S.pc;
+    if (!pc) { S.pendingSignals.push(data); return; }
+    if (data.sdp) {
+      var desc = new RTCSessionDescription(data.sdp);
+      var ready = pc.signalingState === 'stable';
+      pc.setRemoteDescription(desc).then(function () {
+        return flushCandidates();
+      }).then(function () {
+        if (desc.type === 'offer') {
+          return pc.createAnswer().then(function (ans) {
+            return pc.setLocalDescription(ans);
+          }).then(function () {
+            send({
+              t: 'signal',
+              data: { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } }
+            });
+          });
+        }
+      }).catch(function () {});
+      void ready;
+    } else if (data.candidate) {
+      if (!pc.remoteDescription || !pc.remoteDescription.type) {
+        S.pendingCandidates.push(data.candidate);
+      } else {
+        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(function () {});
+      }
+    }
+  }
+  function flushCandidates() {
+    var pc = S.pc; if (!pc) return Promise.resolve();
+    var list = S.pendingCandidates.slice();
+    S.pendingCandidates = [];
+    return Promise.all(list.map(function (c) {
+      return pc.addIceCandidate(new RTCIceCandidate(c)).catch(function () {});
+    }));
+  }
+
+  $('btn-mute').addEventListener('click', function () {
+    if (!S.localStream) return;
+    var t = S.localStream.getAudioTracks()[0]; if (!t) return;
+    t.enabled = !t.enabled;
+    this.classList.toggle('off', !t.enabled);
+  });
+  $('btn-cam').addEventListener('click', function () {
+    if (!S.localStream) return;
+    var t = S.localStream.getVideoTracks()[0];
+    if (!t) return;
+    t.enabled = !t.enabled;
+    this.classList.toggle('off', !t.enabled);
+  });
+  $('btn-hangup').addEventListener('click', hangup);
+  $('remote-video').addEventListener('playing', function () {
+    $('btn-unlock').classList.add('hidden');
+  });
+  $('btn-unlock').addEventListener('click', function () {
+    var btn = this;
+    // 用户手势里恢复 AudioContext（声音），并补一次画面播放
+    unlockAudio();
+    resumeAllVideos();
+    if (S.localStream && S.callMedia === 'video') {
+      var lv = $('local-video');
+      var s = S.localStream;
+      lv.srcObject = null;
+      setTimeout(function () { attachStream(lv, s); playVideo(lv); }, 50);
+    }
+    // 仍然黑就重开摄像头
+    setTimeout(function () {
+      if (S.inCall && S.callMedia === 'video' && sampleBrightness($('local-video')) < 8) {
+        recoverLocalCamera();
+      }
+      btn.classList.add('hidden');
+      btn.textContent = '点击开启声音';
+    }, 900);
+  });
+
+  // ---------------- 远端音频（WebAudio） ----------------
+  // 手机 -> 电脑收不到声音的根因：远端音频被塞在 <video> 里一起播放，
+  // 桌面 Chrome 的自动播放策略会拦下「带声音的 video」，代码只能退化成静音，
+  // 于是有画面没声音。这里把音频拆出来单独走 WebAudio：
+  //   <video> 永远静音只出画面；音频经 AudioContext -> GainNode -> 扬声器。
+  // 只需一次用户手势解锁，之后整通电话（含重协商、切前后台）都不会再被拦。
+  var AE = { ctx: null, gain: null, analyser: null, source: null, stream: null, buf: null };
+
+  function ensureAudioContext() {
+    if (AE.ctx) return AE.ctx;
+    var Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return null;
+    try {
+      AE.ctx = new Ctor();
+      AE.gain = AE.ctx.createGain();
+      AE.gain.gain.value = 1;
+      AE.analyser = AE.ctx.createAnalyser();
+      AE.analyser.fftSize = 512;
+      AE.gain.connect(AE.analyser);
+      AE.analyser.connect(AE.ctx.destination);
+      AE.buf = new Float32Array(AE.analyser.fftSize);
+    } catch (e) {
+      AE.ctx = null;
+    }
+    return AE.ctx;
+  }
+
+  function unlockAudio() {
+    var ctx = ensureAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      ctx.resume().then(function () {
+        if (AE.ctx && AE.ctx.state === 'running') $('btn-unlock').classList.add('hidden');
+      }).catch(function () {});
+    } else if (ctx.state === 'running') {
+      $('btn-unlock').classList.add('hidden');
+    }
+  }
+
+  function playRemoteAudio(stream) {
+    var ctx = ensureAudioContext();
+    var el = $('remote-audio');
+    if (!ctx) {
+      if (el && stream) {
+        el.srcObject = stream;
+        el.muted = false;
+        var p0 = el.play();
+        if (p0 && p0.catch) p0.catch(function () {});
+      }
+      return;
+    }
+    try {
+      if (!stream || !stream.getAudioTracks().length) return;
+      if (AE.source && AE.stream === stream) return;  // 同一个流不重复接
+      if (AE.source) { try { AE.source.disconnect(); } catch (e) {} AE.source = null; }
+      AE.stream = stream;
+      AE.source = ctx.createMediaStreamSource(stream);
+      AE.source.connect(AE.gain);
+    } catch (e) {
+      if (el && stream) {
+        el.srcObject = stream;
+        el.muted = false;
+        var p1 = el.play();
+        if (p1 && p1.catch) p1.catch(function () {});
+      }
+    }
+    if (ctx.state !== 'running') $('btn-unlock').classList.remove('hidden');
+  }
+
+  function remoteAudioLevel() {
+    if (!AE.analyser || !AE.ctx || AE.ctx.state !== 'running') return -1;
+    AE.analyser.getFloatTimeDomainData(AE.buf);
+    var sum = 0;
+    for (var i = 0; i < AE.buf.length; i++) sum += AE.buf[i] * AE.buf[i];
+    var rms = Math.sqrt(sum / AE.buf.length);
+    return Math.round(Math.min(100, rms * 300));
+  }
+
+  // 便于排障：把音频引擎挂到 window（不含任何密钥）
+  window.__icAudio = {
+    state: function () { return AE.ctx ? AE.ctx.state : 'none'; },
+    level: function () { return remoteAudioLevel(); },
+    hasSource: function () { return !!AE.source; },
+    stream: function () { return AE.stream; }
+  };
+
+  // ---------------- 视频挂流与播放 ----------------
+  // 手机 Chrome 的坑：在元素还处于 display:none 时分配 srcObject，
+  // autoplay 不会触发，之后即使显示出来也可能一直是黑屏。
+  // 所以这里统一走 attachStream()：赋值后强制 play()，并在显示/回前台时补 play。
+  function playVideo(el) {
+    if (!el) return;
+    el.setAttribute('playsinline', '');
+    el.setAttribute('webkit-playsinline', '');
+    // 两个 video 一律静音：远端声音走 WebAudio，避免被自动播放策略拦掉
+    el.muted = true;
+    el.volume = 1;
+    var p = el.play();
+    if (p && p.catch) p.catch(function () {});
+  }
+
+  function attachStream(el, stream) {
+    if (!el || !stream) return;
+    if (el.srcObject === stream) { playVideo(el); return; }
+    el.srcObject = stream;
+    playVideo(el);
+    // 某些机型赋值后要等元数据才有画面，这里再补一次
+    el.onloadedmetadata = function () { playVideo(el); };
+  }
+
+  function resumeAllVideos() {
+    if (!S.inCall) return;
+    if (S.callMedia === 'video' && S.localStream) playVideo($('local-video'));
+    if ($('remote-video').srcObject) playVideo($('remote-video'));
+  }
+
+  // 摄像头没出帧时的自救：重开摄像头，用 replaceTrack 换掉发送轨道
+  var recovering = false;
+  function recoverLocalCamera() {
+    if (recovering || !S.inCall || !S.pc) return;
+    recovering = true;
+    sysNote('摄像头没有画面，正在重新打开…');
+    acquireLocalMedia('video').then(function (got) {
+      recovering = false;
+      if (!S.inCall) { got.stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+      var newTrack = got.stream.getVideoTracks()[0];
+      if (!newTrack) { sysNote('该设备没有可用的摄像头'); return; }
+      // 停掉旧的视频轨，避免两个摄像头同时开着
+      if (S.localStream) {
+        S.localStream.getVideoTracks().forEach(function (t) { t.stop(); });
+      }
+      var sender = null;
+      try {
+        S.pc.getSenders().forEach(function (s) { if (s.track && s.track.kind === 'video') sender = s; });
+      } catch (e) {}
+      if (sender) sender.replaceTrack(newTrack).catch(function () {});
+      // 用新流重建本地预览（保留原音频轨）
+      var merged = new MediaStream();
+      if (S.localStream) S.localStream.getAudioTracks().forEach(function (t) { if (t.readyState === 'live') merged.addTrack(t); });
+      merged.addTrack(newTrack);
+      S.localStream = merged;
+      attachStream($('local-video'), merged);
+    }).catch(function (err) {
+      recovering = false;
+      notify(mediaErrorMessage(err));
+    });
+  }
+
+  // 采样 video 当前帧的平均亮度：用来区分「没帧」和「有帧但全黑」
+  function sampleBrightness(el) {
+    try {
+      if (!el || !el.videoWidth) return -1;
+      var c = S.sampleCanvas || (S.sampleCanvas = document.createElement('canvas'));
+      c.width = 32; c.height = 24;
+      var ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(el, 0, 0, 32, 24);
+      var d = ctx.getImageData(0, 0, 32, 24).data;
+      var sum = 0;
+      for (var i = 0; i < d.length; i += 4) sum += (d[i] + d[i + 1] + d[i + 2]) / 3;
+      return Math.round(sum / (d.length / 4));
+    } catch (e) {
+      return -2;
+    }
+  }
+
+  // 黑屏看门狗：有流但 videoWidth 一直是 0，就重新挂一次流强制解码
+  function videoWatchdog() {
+    if (!S.inCall) return;
+    var lv = $('local-video');
+    var rv = $('remote-video');
+    if (S.callMedia === 'video' && S.localStream && lv.srcObject) {
+      var vt = S.localStream.getVideoTracks()[0];
+      var live = vt && vt.readyState === 'live';
+      if (!live || lv.videoWidth === 0) {
+        S.localStuck = (S.localStuck || 0) + 1;
+        if (S.localStuck === 3) {
+          // 先尝试重新挂流（有些机型只是解码没启动）
+          var s0 = S.localStream;
+          lv.srcObject = null;
+          setTimeout(function () { attachStream(lv, s0); }, 60);
+        } else if (S.localStuck === 8) {
+          // 仍然没有画面：重新打开摄像头并替换发送轨道，不重连
+          S.localStuck = 0;
+          recoverLocalCamera();
+        }
+      } else {
+        S.localStuck = 0;
+      }
+    }
+    S.localBright = sampleBrightness(lv);
+    S.remoteBright = sampleBrightness(rv);
+    // 有帧但持续全黑（亮度 < 8）：提示点一下恢复
+    var darkLocal = S.callMedia === 'video' && lv.videoWidth > 0 && S.localBright >= 0 && S.localBright < 8;
+    if (darkLocal) {
+      S.darkTicks = (S.darkTicks || 0) + 1;
+      if (S.darkTicks === 5) {
+        $('btn-unlock').textContent = '画面异常，点这里恢复';
+        $('btn-unlock').classList.remove('hidden');
+      }
+    } else {
+      S.darkTicks = 0;
+    }
+
+    if (rv.srcObject) {
+      var hasVideo = false;
+      try { rv.srcObject.getVideoTracks().forEach(function () { hasVideo = true; }); } catch (e) {}
+      if (hasVideo && rv.videoWidth === 0) {
+        S.remoteStuck = (S.remoteStuck || 0) + 1;
+        if (S.remoteStuck >= 4) {
+          S.remoteStuck = 0;
+          var s = rv.srcObject;
+          rv.srcObject = null;
+          setTimeout(function () { attachStream(rv, s); }, 60);
+        }
+      } else {
+        S.remoteStuck = 0;
+      }
+    }
+  }
+
+  function refreshDiag() {
+    var panel = $('diag-panel');
+    if (!panel || panel.classList.contains('hidden')) return;
+    var S2 = S;
+    var pc = S2.pc;
+    var lines = [];
+    lines.push('连接状态：' + (pc ? pc.connectionState + ' / ' + pc.iceConnectionState : '未建立'));
+    lines.push('协商状态：' + (pc ? pc.signalingState : '-') + '  主叫：' + (S2.initiator ? '是' : '否'));
+    lines.push('媒体类型：' + S2.callMedia + '  掉线重连：' + (S2.peerLost ? '是' : '否'));
+    var lv = $('local-video');
+    lines.push('本地流：' + (S2.localStream
+      ? S2.localStream.getTracks().map(function (t) { return t.kind + ':' + t.readyState + '/' + (t.enabled ? 'on' : 'off'); }).join(' ')
+      : '无'));
+    var rv = $('remote-video');
+    lines.push('远端流：' + (rv && rv.srcObject
+      ? rv.srcObject.getTracks().map(function (t) { return t.kind + ':' + t.readyState; }).join(' ')
+      : '无'));
+    lines.push('远端播放：paused=' + (rv ? rv.paused : '-') + ' muted=' + (rv ? rv.muted : '-') +
+      ' 音量=' + (rv ? rv.volume : '-'));
+    var lvl = remoteAudioLevel();
+    lines.push('音频引擎：' + (AE.ctx ? AE.ctx.state : '不可用') +
+      '  远端音量=' + (lvl < 0 ? '未运行' : lvl + '/100') +
+      '  音频轨=' + (S.remoteTracks.audio
+        ? (S.remoteTracks.audio.readyState + (S.remoteTracks.audio.muted ? '/静音中' : '/有声音'))
+        : '未收到'));
+    lines.push('画面尺寸：本地 ' + (lv ? lv.videoWidth : 0) + 'x' + (lv ? lv.videoHeight : 0) +
+      '  远端 ' + (rv ? rv.videoWidth : 0) + 'x' + (rv ? rv.videoHeight : 0));
+    lines.push('画面亮度：本地 ' + (S.localBright == null ? '-' : S.localBright) +
+      '  远端 ' + (S.remoteBright == null ? '-' : S.remoteBright) + '（<8 视为黑屏，-1 表示无帧）');
+    if (rv) {
+      var vt2 = null;
+      try { rv.srcObject && rv.srcObject.getVideoTracks().forEach(function (t) { vt2 = t; }); } catch (e) {}
+      if (vt2) lines.push('远端视频轨：' + vt2.readyState + ' muted=' + vt2.muted + ' 分辨率=' +
+        (vt2.getSettings ? JSON.stringify(vt2.getSettings()) : '-'));
+    }
+    if (pc) {
+      lines.push('ICE 候选对：');
+      var pairInfo = [];
+      pc.getStats().then(function (stats) {
+        stats.forEach(function (r) {
+          if (r.type === 'candidate-pair' && r.state === 'succeeded') {
+            pairInfo.push((r.nominated ? '★' : '') + (r.localCandidateId || '') + ' <-> ' + (r.remoteCandidateId || ''));
+          }
+        });
+        stats.forEach(function (r) {
+          if (r.type === 'inbound-rtp' || r.type === 'outbound-rtp') {
+            var key = (r.kind || '') + (r.type === 'inbound-rtp' ? ' 收' : ' 发');
+            var bytes = r.bytesReceived != null ? r.bytesReceived : r.bytesSent;
+            pairInfo.push(key + ' ' + Math.round((bytes || 0) / 1024) + 'KB');
+          }
+        });
+        panel.textContent = lines.join('\n') + '\n' + pairInfo.join('\n');
+      }).catch(function () { panel.textContent = lines.join('\n'); });
+    } else {
+      panel.textContent = lines.join('\n');
+    }
+  }
+  var diagTimer = null;
+  $('btn-diag').addEventListener('click', function () {
+    var panel = $('diag-panel');
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) {
+      refreshDiag();
+      clearInterval(diagTimer);
+      diagTimer = setInterval(refreshDiag, 1500);
+    } else {
+      clearInterval(diagTimer);
+    }
+  });
+
+  // ---------------- 通话中断与重连 ----------------
+  function onPeerLost(msg) {
+    if (!S.inCall) return;
+    S.peerLost = true;
+    $('call-name').textContent = (S.peerDisplay || '对方') + ' 重连中…';
+    $('btn-unlock').classList.add('hidden');
+  }
+
+  function teardownPeer() {
+    if (S.pc) { try { S.pc.close(); } catch (e) {} S.pc = null; }
+    S.pendingCandidates = [];
+    S.pendingSignals = [];
+    $('remote-video').srcObject = null;
+  }
+
+  // 掉线的一方重连上来了：由它重新发起 offer
+  function onCallResume(msg) {
+    S.peer = msg.peer; S.peerDisplay = msg.peer;
+    S.callMedia = msg.media || S.callMedia;
+    S.inCall = true;
+    S.peerLost = false;
+    $('call-layer').classList.remove('hidden');
+    $('call-name').textContent = S.peerDisplay;
+    teardownPeer();
+    if (!S.localStream || !S.localStream.getTracks().length) {
+      // 本地流被系统回收，重新获取
+      var c = S.callMedia === 'video' ? { audio: true, video: { facingMode: 'user' } } : { audio: true };
+      navigator.mediaDevices.getUserMedia(c).then(function (s) {
+        S.localStream = s;
+        attachStream($('local-video'), s);
+        rebuildAndOffer();
+      }).catch(function () { endCall(); });
+      return;
+    }
+    rebuildAndOffer();
+  }
+
+  // 在线的一方：对方回来了，重建连接等它发 offer
+  function onPeerBack(msg) {
+    if (!S.inCall) return;
+    S.peerLost = false;
+    $('call-name').textContent = S.peerDisplay;
+    teardownPeer();
+    setupPeer();
+    if (S.localStream) S.localStream.getTracks().forEach(function (t) { S.pc.addTrack(t, S.localStream); });
+  }
+
+  function rebuildAndOffer() {
+    if (!S.inCall) return;
+    setupPeer();
+    if (S.localStream) S.localStream.getTracks().forEach(function (t) { S.pc.addTrack(t, S.localStream); });
+    makeOffer();
+  }
+
+  function hangup(reason) {
+    send({ t: 'hangup', reason: reason || 'user' });
+    endCall();
+  }
+
+  function endCall() {
+    stopRing();
+    releaseScreenAwake();
+        clearInterval(S.timer);
+    clearInterval(S.watchdog);
+    S.watchdog = null;
+    $('call-layer').classList.add('hidden');
+    $('incoming').classList.add('hidden');
+    $('remote-video').srcObject = null;
+    $('local-video').srcObject = null;
+    if (AE.source) { try { AE.source.disconnect(); } catch (e) {} AE.source = null; }
+    AE.stream = null;
+    $('remote-audio').srcObject = null;
+    if (S.localStream) { S.localStream.getTracks().forEach(function (t) { t.stop(); }); S.localStream = null; }
+    if (S.pc) { try { S.pc.close(); } catch (e) {} S.pc = null; }
+    S.pendingCandidates = [];
+    S.pendingSignals = [];
+    S.inCall = false;
+    S.peerLost = false;
+    S.calling = false;
+    S.darkTicks = 0;
+    $('btn-mute').classList.remove('off');
+    $('btn-cam').classList.remove('off');
+    send({ t: 'users' });
+  }
+
+  /* ------------------------------ 启动 ------------------------------ */
+  // 手机浏览器要求用户手势后才允许播放声音，任何点击都补一次播放
+  document.addEventListener('pointerdown', function () {
+    unlockAudio();
+    if (!S.inCall) return;
+    resumeAllVideos();
+  }, { passive: true });
+
+  // 便于自动化测试与排障：把内部状态挂到 window 上（只在本页内存中，不含任何密钥）
+  window.__ic = S;
+
+  if (S.token && S.user) {
+    $('in-user').value = S.user;
+    connect({ t: 'auth', token: S.token });
+  } else {
+    show('screen-login');
+  }
+})();
+</script>
+</body>
+</html>

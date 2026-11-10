@@ -1,5 +1,8 @@
 # 局域网对讲机（intercom）
 
+> 私有仓库：<https://github.com/ycm50/intercom>（git push 需 GitHub 凭据）
+
+
 零第三方运行时依赖的聊天服务器：C++20 + 单头文件 cpp-httplib + OpenSSL，全部静态链接，
 一个 exe 加一个 `public/index.html` 就能跑。前端是纯 HTML + 原生 JavaScript，针对手机 Chrome 适配。
 

@@ -33,10 +33,9 @@ if ($LASTEXITCODE -ne 0) { throw "编译失败" }
 # 前端语法自检：避免 index.html 里的 JS 被改坏后仍被打包发布
 $htmlPath = Join-Path $root "public\index.html"
 $html = Get-Content $htmlPath -Raw
-$startIdx = $html.IndexOf("<script>")
-$endIdx = $html.LastIndexOf("</script>")
-if ($startIdx -lt 0 -or $endIdx -lt 0 -or $endIdx -le $startIdx) { throw "public/index.html 缺少 <script> 段" }
-$js = $html.Substring($startIdx + 8, $endIdx - $startIdx - 8)
+$matches = [regex]::Matches($html, '<script>([\s\S]*?)</script>')
+if ($matches.Count -eq 0) { throw "public/index.html 缺少 <script> 段" }
+$js = ($matches | ForEach-Object { $_.Groups[1].Value }) -join "`n;`n"
 $tmp = Join-Path $env:TEMP ("intercom-check-" + [guid]::NewGuid().ToString() + ".js")
 Set-Content -Path $tmp -Value $js -Encoding UTF8
 $node = Get-Command node -ErrorAction SilentlyContinue

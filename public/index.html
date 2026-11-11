@@ -7,13 +7,36 @@
 <meta name="format-detection" content="telephone=no">
 <title>对讲机</title>
 <style>
+/* 颜色全部走变量，由 data-theme 切换日间/夜间 */
 :root{
-  --bg:#0b1220; --bg2:#111a2c; --line:#1f2b42; --fg:#e8eefc; --dim:#8ea0c0;
-  --accent:#3b82f6; --accent2:#22c55e; --danger:#ef4444; --warn:#f59e0b;
   --safe-b:env(safe-area-inset-bottom,0px); --safe-t:env(safe-area-inset-top,0px);
+  --accent:#3b82f6; --accent2:#22c55e; --danger:#ef4444; --warn:#f59e0b;
+  --on-accent:#ffffff;
+}
+:root[data-theme="dark"]{
+  --bg:#0b1220; --bg2:#111a2c; --line:#1f2b42; --fg:#e8eefc; --dim:#8ea0c0;
+  --input:#0d1626; --card:#182338; --card-active:#22304a; --avatar-bg:#25406b; --avatar-fg:#cfe0ff;
+  --bubble:#182338; --bubble-me:#1d4ed8; --bubble-meta:#9fb3d6;
+  --callbg:#05080f; --overlay:rgba(6,10,20,.94); --mask:rgba(6,10,20,.92);
+  --err:#fca5a5;
+  --dangerbar:#4a1d1d; --dangerbar-fg:#fecaca; --recbar:#7f1d1d; --recbar-fg:#fee2e2;
+  --shadow:0 12px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="light"]{
+  --bg:#f5f7fb; --bg2:#ffffff; --line:#dbe3f0; --fg:#0f172a; --dim:#5a6a84;
+  --input:#f1f5fb; --card:#eaf0f9; --card-active:#dde7f6; --avatar-bg:#d3e2fb; --avatar-fg:#1d4ed8;
+  --bubble:#eaf0f9; --bubble-me:#2563eb; --bubble-meta:#5a6a84;
+  --callbg:#0a0f18; --overlay:rgba(15,23,42,.72); --mask:rgba(255,255,255,.96);
+  --err:#b91c1c;
+  --dangerbar:#fee2e2; --dangerbar-fg:#991b1b; --recbar:#fecaca; --recbar-fg:#991b1b;
+  --shadow:0 12px 32px rgba(15,23,42,.14);
+  --accent:#2563eb; --accent2:#16a34a; --danger:#dc2626; --warn:#d97706;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html[data-theme="light"]{color-scheme:light}
+html[data-theme="dark"]{color-scheme:dark}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+  transition:background-color .18s,color .18s}
   font:15px/1.5 -apple-system,"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
   overscroll-behavior:none}
 body{display:flex;flex-direction:column;height:100dvh;overflow:hidden}
@@ -31,15 +54,15 @@ input{font:inherit;color:inherit}
 .field{margin-bottom:14px}
 .field label{display:block;font-size:12px;color:var(--dim);margin-bottom:6px}
 .field input{width:100%;padding:13px 14px;border-radius:12px;border:1px solid var(--line);
-  background:#0d1626;outline:none;font-size:16px}
+  background:var(--input);outline:none;font-size:16px}
 .field input:focus{border-color:var(--accent)}
 .btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
   padding:14px;border-radius:12px;background:var(--accent);color:#fff;font-weight:600;font-size:16px}
 .btn:active{transform:scale(.985)}
-.btn.ghost{background:#182338;color:var(--fg)}
+.btn.ghost{background:var(--card);color:var(--fg)}
 .btn.danger{background:var(--danger)}
 .tip{margin-top:14px;color:var(--dim);font-size:12px;line-height:1.7}
-.err{color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px}
+.err{color:var(--err);font-size:13px;min-height:18px;margin-top:10px}
 
 /* 大厅 */
 .topbar{display:flex;align-items:center;gap:10px;padding:calc(12px + var(--safe-t)) 14px 12px;
@@ -47,13 +70,13 @@ input{font:inherit;color:inherit}
 .topbar .title{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .badge{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:3px 8px}
 .iconbtn{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;justify-content:center;
-  background:#182338}
-.iconbtn:active{background:#22304a}
+  background:var(--card)}
+.iconbtn:active{background:var(--card-active)}
 .list{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px 12px}
 .user-row{display:flex;align-items:center;gap:12px;padding:12px;border-radius:14px;background:var(--bg2);
   border:1px solid var(--line);margin-bottom:10px}
-.avatar{width:42px;height:42px;border-radius:50%;background:#25406b;display:flex;align-items:center;
-  justify-content:center;font-weight:700;color:#cfe0ff;flex:none}
+.avatar{width:42px;height:42px;border-radius:50%;background:var(--avatar-bg);display:flex;align-items:center;
+  justify-content:center;font-weight:700;color:var(--avatar-fg);flex:none}
 .user-meta{flex:1;min-width:0}
 .user-name{font-weight:600}
 .user-sub{font-size:12px;color:var(--dim)}
@@ -64,64 +87,67 @@ input{font:inherit;color:inherit}
 /* 聊天 */
 .msgs{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 12px 6px;display:flex;
   flex-direction:column;gap:10px}
-.bubble{max-width:78%;padding:9px 12px;border-radius:14px;background:#182338;align-self:flex-start;
+.bubble{max-width:78%;padding:9px 12px;border-radius:14px;background:var(--bubble);align-self:flex-start;
   word-break:break-word;white-space:pre-wrap}
-.bubble.me{align-self:flex-end;background:#1d4ed8}
-.bubble .meta{font-size:11px;color:#9fb3d6;margin-top:4px}
+.bubble.me{align-self:flex-end;background:var(--bubble-me);color:var(--on-accent)}
+.bubble .meta{font-size:11px;color:var(--bubble-meta);margin-top:4px}
 .bubble audio,.bubble video{max-width:100%;border-radius:10px;display:block}
 .bubble video{width:220px;background:#000}
 .sys{text-align:center;color:var(--dim);font-size:12px;padding:4px}
 .composer{display:flex;gap:8px;align-items:flex-end;padding:10px 10px calc(10px + var(--safe-b));
   border-top:1px solid var(--line);background:var(--bg2)}
 .composer textarea{flex:1;resize:none;min-height:42px;max-height:120px;padding:11px 12px;border-radius:12px;
-  border:1px solid var(--line);background:#0d1626;outline:none;font-size:16px;line-height:1.35}
+  border:1px solid var(--line);background:var(--input);outline:none;font-size:16px;line-height:1.35}
 .composer textarea:focus{border-color:var(--accent)}
 .send{width:46px;height:44px;border-radius:12px;background:var(--accent);display:flex;align-items:center;
   justify-content:center;flex:none}
-.rec{width:46px;height:44px;border-radius:12px;background:#182338;display:flex;align-items:center;
+.rec{width:46px;height:44px;border-radius:12px;background:var(--card);display:flex;align-items:center;
   justify-content:center;flex:none}
 .rec.on{background:var(--danger);animation:pulse 1s infinite}
 @keyframes pulse{50%{opacity:.55}}
 .diagbtn{position:absolute;right:12px;top:calc(52px + var(--safe-t));z-index:4;width:34px;height:34px;
-  border-radius:50%;background:rgba(30,41,59,.85);color:#cfe0ff;font-size:16px;
+  border-radius:50%;background:var(--card-active);color:var(--fg);font-size:16px;
   display:flex;align-items:center;justify-content:center}
 .diagpanel{position:absolute;left:10px;right:10px;bottom:96px;max-height:44vh;overflow:auto;z-index:5;
-  background:rgba(6,10,20,.92);border:1px solid var(--line);border-radius:12px;padding:10px 12px;
-  font-size:11px;line-height:1.5;color:#cfe0ff;white-space:pre-wrap;margin:0}
+  background:var(--mask);border:1px solid var(--line);border-radius:12px;padding:10px 12px;
+  font-size:11px;line-height:1.5;color:var(--fg);white-space:pre-wrap;margin:0}
 .theme-panel{position:fixed;left:12px;right:12px;bottom:calc(12px + var(--safe-b));z-index:60;
   background:var(--bg2);border:1px solid var(--line);border-radius:16px;padding:16px;display:none;
-  box-shadow:0 12px 40px rgba(0,0,0,.5)}
+  box-shadow:var(--shadow)}
 .theme-panel.show{display:block}
 .theme-panel .row{display:flex;align-items:center;gap:12px;margin-bottom:14px}
 .theme-panel .row:last-child{margin-bottom:0}
 .theme-panel label{font-size:13px;color:var(--dim);width:44px;flex:none}
 .theme-panel input[type=range]{flex:1;height:28px;accent-color:var(--accent)}
 .theme-panel .val{font-size:12px;color:var(--dim);width:42px;text-align:right;flex:none}
+.theme-panel .seg{display:flex;gap:8px;flex:1}
+.theme-panel .seg button{flex:1;padding:10px;border-radius:10px;background:var(--card);font-size:14px;border:1px solid transparent}
+.theme-panel .seg button.on{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 .theme-panel .acts{display:flex;gap:10px;margin-top:14px}
-.theme-panel .acts button{flex:1;padding:11px;border-radius:10px;background:#182338;font-size:14px}
+.theme-panel .acts button{flex:1;padding:11px;border-radius:10px;background:var(--card);font-size:14px}
 .theme-panel .acts button.primary{background:var(--accent);color:#fff}
 .theme-mask{position:fixed;inset:0;z-index:59;background:transparent;display:none}
 .theme-mask.show{display:block}
-.perm-bar{padding:8px 14px;background:#4a1d1d;color:#fecaca;font-size:12px;line-height:1.5}
+.perm-bar{padding:8px 14px;background:var(--dangerbar);color:var(--dangerbar-fg);font-size:12px;line-height:1.5}
 .perm-bar:empty{display:none}
-.recdot{position:absolute;left:50%;bottom:96px;transform:translateX(-50%);background:#7f1d1d;
-  color:#fee2e2;padding:6px 14px;border-radius:999px;font-size:13px}
+.recdot{position:absolute;left:50%;bottom:96px;transform:translateX(-50%);background:var(--recbar);
+  color:var(--recbar-fg);padding:6px 14px;border-radius:999px;font-size:13px}
 
 /* 来电 / 通话 */
-.overlay{position:fixed;inset:0;background:rgba(6,10,20,.94);display:flex;flex-direction:column;
+.overlay{position:fixed;inset:0;background:var(--overlay);display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:18px;z-index:50;padding:24px;text-align:center}
 .overlay .who{font-size:22px;font-weight:700}
 .overlay .sub{color:var(--dim)}
 .overlay .row{display:flex;gap:18px;margin-top:12px}
 .circbtn{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-  background:#182338;font-size:24px}
+  background:var(--card);font-size:24px}
 .circbtn.accept{background:var(--accent2)}
 .circbtn.hang{background:var(--danger)}
-#call-layer{background:#05080f;justify-content:stretch;align-items:stretch;padding:0}
+#call-layer{background:var(--callbg);justify-content:stretch;align-items:stretch;padding:0}
 #remote-audio{display:none}
 #remote-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#05080f}
 #local-video{position:absolute;right:12px;top:calc(12px + var(--safe-t));width:104px;height:150px;
-  object-fit:cover;border-radius:12px;border:1px solid #1f2b42;background:#000;z-index:2}
+  object-fit:cover;border-radius:12px;border:1px solid var(--line);background:#000;z-index:2}
 .call-top{position:absolute;left:0;right:0;top:0;padding:calc(10px + var(--safe-t)) 14px 10px;
   display:flex;align-items:center;gap:10px;z-index:3;
   background:linear-gradient(180deg,rgba(0,0,0,.55),transparent)}
@@ -130,15 +156,21 @@ input{font:inherit;color:inherit}
   display:flex;justify-content:center;gap:16px;z-index:3;
   background:linear-gradient(0deg,rgba(0,0,0,.6),transparent)}
 .call-bottom .circbtn{width:56px;height:56px;background:rgba(30,41,59,.85)}
-.call-bottom .circbtn.off{background:var(--warn);color:#111}
+.call-bottom .circbtn.off{background:var(--warn);color:var(--on-accent)}
 .call-bottom .circbtn.hang{background:var(--danger)}
-.unlock{position:absolute;left:50%;bottom:120px;transform:translateX(-50%);background:#1d4ed8;
+.unlock{position:absolute;left:50%;bottom:120px;transform:translateX(-50%);background:var(--bubble-me);color:var(--on-accent);
   padding:10px 18px;border-radius:999px;font-size:13px;z-index:4}
-.avatar-big{width:110px;height:110px;border-radius:50%;background:#25406b;display:flex;
+.avatar-big{width:110px;height:110px;border-radius:50%;background:var(--avatar-bg);color:var(--avatar-fg);display:flex;
   align-items:center;justify-content:center;font-size:44px;font-weight:700}
 </style>
 </head>
 <body>
+<script>
+// 尽早设定主题，避免首屏闪烁
+(function(){try{var t=localStorage.getItem("ic_theme");var m=t?JSON.parse(t).mode:null;
+if(!m){m=(window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches)?"light":"dark";}
+document.documentElement.setAttribute("data-theme",m);}catch(e){document.documentElement.setAttribute("data-theme","dark");}})();
+</script>
 
 <!-- 登录 -->
 <div id="screen-login" class="screen">
@@ -189,6 +221,12 @@ input{font:inherit;color:inherit}
 <!-- 亮度调节 -->
 <div class="theme-mask" id="theme-mask"></div>
 <div class="theme-panel" id="theme-panel">
+  <div class="row"><label>主题</label>
+    <div class="seg">
+      <button id="theme-day">☀ 日间</button>
+      <button id="theme-night">🌙 夜间</button>
+    </div>
+  </div>
   <div class="row"><label>亮度</label><input id="theme-bright" type="range" min="20" max="160" step="1"><span class="val" id="theme-bright-val">100%</span></div>
   <div class="row"><label>对比</label><input id="theme-contrast" type="range" min="60" max="150" step="1"><span class="val" id="theme-contrast-val">100%</span></div>
   <div class="acts">
@@ -1015,10 +1053,26 @@ input{font:inherit;color:inherit}
   // ---------------- 亮度 / 对比 ----------------
   // 用 CSS filter 作用在 <html> 上，不影响布局，也不动颜色变量；
   // 值存 localStorage，下次打开沿用；「跟随系统」读 prefers-color-scheme 给一套舒适默认。
-  var TH = { bright: 100, contrast: 100 };
+  // mode: dark 夜间 / light 日间
+  var TH = { mode: 'dark', bright: 100, contrast: 100 };
+
+  function systemMode() {
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  }
+
+  function setMode(mode) {
+    TH.mode = (mode === 'light') ? 'light' : 'dark';
+    TH.bright = 100;
+    TH.contrast = 100;
+    applyTheme();
+    saveTheme();
+  }
 
   function applyTheme() {
     var root = document.documentElement;
+    root.setAttribute('data-theme', TH.mode === 'light' ? 'light' : 'dark');
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', TH.mode === 'light' ? '#f5f7fb' : '#0b1220');
     var f = [];
     if (TH.bright !== 100) f.push('brightness(' + (TH.bright / 100) + ')');
     if (TH.contrast !== 100) f.push('contrast(' + (TH.contrast / 100) + ')');
@@ -1026,19 +1080,29 @@ input{font:inherit;color:inherit}
     var bv = $('theme-bright'), cv = $('theme-contrast');
     if (bv) { bv.value = TH.bright; $('theme-bright-val').textContent = TH.bright + '%'; }
     if (cv) { cv.value = TH.contrast; $('theme-contrast-val').textContent = TH.contrast + '%'; }
+    var day = $('theme-day'), night = $('theme-night');
+    if (day) day.classList.toggle('on', TH.mode === 'light');
+    if (night) night.classList.toggle('on', TH.mode === 'dark');
+    ['btn-theme', 'btn-theme-chat'].forEach(function (id) {
+      var el = $(id);
+      if (el) el.textContent = TH.mode === 'light' ? '☀' : '◐';
+    });
   }
 
   function saveTheme() {
     try {
       localStorage.setItem('ic_theme', JSON.stringify(TH));
+      localStorage.setItem('ic_theme_manual', '1');
     } catch (e) { /* 隐私模式忽略 */ }
   }
 
   function loadTheme() {
+    TH.mode = systemMode();
     try {
       var raw = localStorage.getItem('ic_theme');
       if (raw) {
         var o = JSON.parse(raw);
+        if (o && (o.mode === 'light' || o.mode === 'dark')) TH.mode = o.mode;
         if (o && typeof o.bright === 'number') TH.bright = Math.min(160, Math.max(20, o.bright));
         if (o && typeof o.contrast === 'number') TH.contrast = Math.min(150, Math.max(60, o.contrast));
       }
@@ -1047,12 +1111,11 @@ input{font:inherit;color:inherit}
   }
 
   function followSystem() {
-    var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    // 深色主题默认偏暗，提亮一点更舒服；浅色主题保持原样
-    TH.bright = dark ? 125 : 100;
-    TH.contrast = dark ? 105 : 100;
+    TH.mode = systemMode();
+    TH.bright = 100;
+    TH.contrast = 100;
     applyTheme();
-    saveTheme();
+    try { localStorage.removeItem('ic_theme_manual'); } catch (e) {}
   }
 
   function toggleThemePanel(forceOpen) {
@@ -1087,6 +1150,20 @@ input{font:inherit;color:inherit}
       var el = $(id);
       if (el) el.addEventListener('click', function (e) { e.stopPropagation(); toggleThemePanel(); });
     });
+    var dayBtn = $('theme-day'), nightBtn = $('theme-night');
+    if (dayBtn) dayBtn.addEventListener('click', function () { setMode('light'); });
+    if (nightBtn) nightBtn.addEventListener('click', function () { setMode('dark'); });
+    // 用户没手动设置过时，跟随系统主题变化
+    if (window.matchMedia) {
+      var mq = window.matchMedia('(prefers-color-scheme: light)');
+      var onChange = function () {
+        var manual = false;
+        try { manual = localStorage.getItem('ic_theme_manual') === '1'; } catch (e) {}
+        if (!manual) { TH.mode = systemMode(); applyTheme(); }
+      };
+      if (mq.addEventListener) mq.addEventListener('change', onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+    }
     $('theme-mask').addEventListener('click', function () { toggleThemePanel(false); });
     $('theme-close').addEventListener('click', function () { toggleThemePanel(false); });
     $('theme-reset').addEventListener('click', function () {

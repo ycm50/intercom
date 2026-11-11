@@ -88,6 +88,20 @@ input{font:inherit;color:inherit}
 .diagpanel{position:absolute;left:10px;right:10px;bottom:96px;max-height:44vh;overflow:auto;z-index:5;
   background:rgba(6,10,20,.92);border:1px solid var(--line);border-radius:12px;padding:10px 12px;
   font-size:11px;line-height:1.5;color:#cfe0ff;white-space:pre-wrap;margin:0}
+.theme-panel{position:fixed;left:12px;right:12px;bottom:calc(12px + var(--safe-b));z-index:60;
+  background:var(--bg2);border:1px solid var(--line);border-radius:16px;padding:16px;display:none;
+  box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.theme-panel.show{display:block}
+.theme-panel .row{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.theme-panel .row:last-child{margin-bottom:0}
+.theme-panel label{font-size:13px;color:var(--dim);width:44px;flex:none}
+.theme-panel input[type=range]{flex:1;height:28px;accent-color:var(--accent)}
+.theme-panel .val{font-size:12px;color:var(--dim);width:42px;text-align:right;flex:none}
+.theme-panel .acts{display:flex;gap:10px;margin-top:14px}
+.theme-panel .acts button{flex:1;padding:11px;border-radius:10px;background:#182338;font-size:14px}
+.theme-panel .acts button.primary{background:var(--accent);color:#fff}
+.theme-mask{position:fixed;inset:0;z-index:59;background:transparent;display:none}
+.theme-mask.show{display:block}
 .perm-bar{padding:8px 14px;background:#4a1d1d;color:#fecaca;font-size:12px;line-height:1.5}
 .perm-bar:empty{display:none}
 .recdot{position:absolute;left:50%;bottom:96px;transform:translateX(-50%);background:#7f1d1d;
@@ -146,6 +160,7 @@ input{font:inherit;color:inherit}
   <div class="topbar">
     <div class="title" id="lobby-title">在线</div>
     <div class="badge" id="online-count">0 人</div>
+    <button class="iconbtn" id="btn-theme" title="亮度">◐</button>
     <button class="iconbtn" id="btn-refresh" title="刷新">⟳</button>
     <button class="iconbtn" id="btn-logout" title="退出">⎋</button>
   </div>
@@ -159,6 +174,7 @@ input{font:inherit;color:inherit}
     <div class="title" id="chat-title">对方</div>
     <button class="iconbtn" id="btn-audio-call" title="语音通话">☎</button>
     <button class="iconbtn" id="btn-video-call" title="视频通话">▣</button>
+    <button class="iconbtn" id="btn-theme-chat" title="亮度">◐</button>
   </div>
   <div class="msgs" id="msgs"></div>
   <div class="composer">
@@ -167,6 +183,18 @@ input{font:inherit;color:inherit}
     <label class="rec" for="file-video" title="发送视频片段">📎</label>
     <input id="file-video" type="file" accept="video/*" class="hidden">
     <button class="send" id="btn-send" title="发送">➤</button>
+  </div>
+</div>
+
+<!-- 亮度调节 -->
+<div class="theme-mask" id="theme-mask"></div>
+<div class="theme-panel" id="theme-panel">
+  <div class="row"><label>亮度</label><input id="theme-bright" type="range" min="20" max="160" step="1"><span class="val" id="theme-bright-val">100%</span></div>
+  <div class="row"><label>对比</label><input id="theme-contrast" type="range" min="60" max="150" step="1"><span class="val" id="theme-contrast-val">100%</span></div>
+  <div class="acts">
+    <button id="theme-reset">默认</button>
+    <button id="theme-auto">跟随系统</button>
+    <button class="primary" id="theme-close">完成</button>
   </div>
 </div>
 
@@ -984,6 +1012,89 @@ input{font:inherit;color:inherit}
     }, 900);
   });
 
+  // ---------------- 亮度 / 对比 ----------------
+  // 用 CSS filter 作用在 <html> 上，不影响布局，也不动颜色变量；
+  // 值存 localStorage，下次打开沿用；「跟随系统」读 prefers-color-scheme 给一套舒适默认。
+  var TH = { bright: 100, contrast: 100 };
+
+  function applyTheme() {
+    var root = document.documentElement;
+    var f = [];
+    if (TH.bright !== 100) f.push('brightness(' + (TH.bright / 100) + ')');
+    if (TH.contrast !== 100) f.push('contrast(' + (TH.contrast / 100) + ')');
+    root.style.filter = f.length ? f.join(' ') : '';
+    var bv = $('theme-bright'), cv = $('theme-contrast');
+    if (bv) { bv.value = TH.bright; $('theme-bright-val').textContent = TH.bright + '%'; }
+    if (cv) { cv.value = TH.contrast; $('theme-contrast-val').textContent = TH.contrast + '%'; }
+  }
+
+  function saveTheme() {
+    try {
+      localStorage.setItem('ic_theme', JSON.stringify(TH));
+    } catch (e) { /* 隐私模式忽略 */ }
+  }
+
+  function loadTheme() {
+    try {
+      var raw = localStorage.getItem('ic_theme');
+      if (raw) {
+        var o = JSON.parse(raw);
+        if (o && typeof o.bright === 'number') TH.bright = Math.min(160, Math.max(20, o.bright));
+        if (o && typeof o.contrast === 'number') TH.contrast = Math.min(150, Math.max(60, o.contrast));
+      }
+    } catch (e) { /* 忽略损坏数据 */ }
+    applyTheme();
+  }
+
+  function followSystem() {
+    var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    // 深色主题默认偏暗，提亮一点更舒服；浅色主题保持原样
+    TH.bright = dark ? 125 : 100;
+    TH.contrast = dark ? 105 : 100;
+    applyTheme();
+    saveTheme();
+  }
+
+  function toggleThemePanel(forceOpen) {
+    var panel = $('theme-panel'), mask = $('theme-mask');
+    var open;
+    if (forceOpen === true) open = true;
+    else if (forceOpen === false) open = false;   // 明确关闭
+    else open = !panel.classList.contains('show');
+    panel.classList.toggle('show', open);
+    mask.classList.toggle('show', open);
+  }
+
+  function bindTheme() {
+    var bv = $('theme-bright'), cv = $('theme-contrast');
+    if (bv) {
+      bv.addEventListener('input', function () {
+        TH.bright = parseInt(this.value, 10) || 100;
+        $('theme-bright-val').textContent = TH.bright + '%';
+        applyTheme();
+      });
+      bv.addEventListener('change', saveTheme);
+    }
+    if (cv) {
+      cv.addEventListener('input', function () {
+        TH.contrast = parseInt(this.value, 10) || 100;
+        $('theme-contrast-val').textContent = TH.contrast + '%';
+        applyTheme();
+      });
+      cv.addEventListener('change', saveTheme);
+    }
+    ['btn-theme', 'btn-theme-chat'].forEach(function (id) {
+      var el = $(id);
+      if (el) el.addEventListener('click', function (e) { e.stopPropagation(); toggleThemePanel(); });
+    });
+    $('theme-mask').addEventListener('click', function () { toggleThemePanel(false); });
+    $('theme-close').addEventListener('click', function () { toggleThemePanel(false); });
+    $('theme-reset').addEventListener('click', function () {
+      TH.bright = 100; TH.contrast = 100; applyTheme(); saveTheme();
+    });
+    $('theme-auto').addEventListener('click', followSystem);
+  }
+
   // ---------------- 远端音频（WebAudio） ----------------
   // 手机 -> 电脑收不到声音的根因：远端音频被塞在 <video> 里一起播放，
   // 桌面 Chrome 的自动播放策略会拦下「带声音的 video」，代码只能退化成静音，
@@ -1367,8 +1478,16 @@ input{font:inherit;color:inherit}
     resumeAllVideos();
   }, { passive: true });
 
+  // 亮度：先应用（避免闪一下），再绑定交互
+  loadTheme();
+  bindTheme();
+
   // 便于自动化测试与排障：把内部状态挂到 window 上（只在本页内存中，不含任何密钥）
   window.__ic = S;
+  window.__icTheme = {
+    get: function () { return { bright: TH.bright, contrast: TH.contrast }; },
+    set: function (b, c) { if (b) TH.bright = b; if (c) TH.contrast = c; applyTheme(); saveTheme(); }
+  };
 
   if (S.token && S.user) {
     $('in-user').value = S.user;

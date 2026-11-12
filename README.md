@@ -35,35 +35,40 @@
 | 访问控制 | 只监听 127.0.0.1，公网 IP 无法直连，且校验 Cloudflare 请求头 |
 | 账号安全 | 同账号重复登录踢掉旧连接；来电 45 秒无人接听自动取消 |
 
-## 安装（一条命令）
+## 安装
+
+安装脚本不再联网下载，改为**以二进制文件为参数**：先读取文件头判断平台与架构，
+与当前系统一致才安装，不一致直接报错并告诉你要用哪个文件。
 
 ### Linux / macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ycm50/intercom/main/install.sh | sh
+sh install.sh ./cochat-linux-amd64
 ```
 
 ### Windows
 
 ```powershell
-irm https://raw.githubusercontent.com/ycm50/intercom/main/install.ps1 | iex
+.\install.ps1 .\cochat-windows-amd64.exe
 ```
 
-两个脚本都会：
+两者都：
 
-1. 按当前系统与架构自动选择对应二进制
-   （`cochat-linux-amd64` / `cochat-linux-arm64` / `cochat-linux-armv7` / `cochat-windows-amd64.exe`）；
-2. 用系统自带的 **curl**（Windows 用 `System32\curl.exe`）下载，不依赖 wget / Invoke-WebRequest；
-3. 安装到 **`~/.local/bin/cochat`**（Windows 为 `%USERPROFILE%\.local\bin\cochat.exe`）；
-4. 检查 PATH，Windows 会自动把目录加进用户 PATH，Linux 会给出提示命令。
+1. 读取二进制的 **ELF / PE / Mach-O 文件头**，识别出 `系统/架构`；
+2. 与当前系统的 `uname -m` / `PROCESSOR_ARCHITECTURE` 比对，**不匹配就退出**（退出码 1），
+   并提示当前系统应该用哪个文件；
+3. 匹配则安装到 **`~/.local/bin/cochat`**（Windows 为 `%USERPROFILE%\.local\bin\cochat.exe`）；
+4. 检查 PATH，Windows 会自动加入用户 PATH，Linux 给出提示命令。
 
 可覆盖的环境变量：
 
 | 变量 | 作用 |
 | --- | --- |
-| `COCHAT_VERSION` | 指定版本，默认 `latest` |
-| `COCHAT_BASE_URL` | 覆盖下载根地址（内网镜像 / 自建 CDN） |
 | `COCHAT_PREFIX` | 覆盖安装目录 |
+| `COCHAT_FORCE=1` | 架构不匹配也强行安装（仅供排障） |
+
+支持的二进制类型：ELF（x86 / amd64 / armv7 / arm64 / ppc64le）、
+PE（x86 / amd64 / armv7 / arm64）、Mach-O（x86 / amd64 / armv7 / arm64）。
 
 ## 构建
 

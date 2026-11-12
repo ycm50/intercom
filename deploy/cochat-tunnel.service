@@ -1,0 +1,14 @@
+[Unit]
+Description=cochat cloudflared 隧道
+After=network.target cochat.service
+Wants=cochat.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8095
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

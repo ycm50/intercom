@@ -1,0 +1,15 @@
+[Unit]
+Description=cochat 对讲机服务
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.local/bin
+ExecStart=/root/.local/bin/cochat --port 8095
+Restart=always
+RestartSec=3
+User=root
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

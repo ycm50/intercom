@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(intercom-server LANGUAGES CXX)
+project(cochat LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,10 +11,10 @@ endif()
 
 # 服务端不依赖 OpenSSL：对外 https 由 cloudflared 边缘提供，
 # 密码学使用内置实现（SHA-256 / HMAC / PBKDF2 / 安全随机数），
-# 因此 amd64 / arm64 的 Linux 上装好 g++ + cmake 即可编译。
+# 因此在 amd64 / arm64 / armv7 的 Linux 与 Windows 上装好编译器即可构建。
 find_package(Threads REQUIRED)
 
-add_executable(intercom-server
+add_executable(cochat
   src/main.cpp
   src/auth.cpp
   src/hub.cpp
@@ -22,41 +22,56 @@ add_executable(intercom-server
   src/crypto.cpp
 )
 
-target_include_directories(intercom-server PRIVATE src third_party)
+target_include_directories(cochat PRIVATE src third_party "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
-target_compile_definitions(intercom-server PRIVATE
+target_compile_definitions(cochat PRIVATE
   CPPHTTPLIB_THREAD_POOL_COUNT=24
 )
 
-target_link_libraries(intercom-server PRIVATE Threads::Threads)
+target_link_libraries(cochat PRIVATE Threads::Threads)
 
 if(WIN32)
-  target_link_libraries(intercom-server PRIVATE ws2_32 bcrypt)
-  target_link_options(intercom-server PRIVATE -static -static-libgcc -static-libstdc++)
+  target_link_libraries(cochat PRIVATE ws2_32 bcrypt)
+  target_link_options(cochat PRIVATE -static -static-libgcc -static-libstdc++)
+  # MinGW 的 C++ 异常依赖 SEH/SjLj unwind 信息，链接时不能把相关段回收掉，
+  # 否则会缺 __gxx_personality_* / _Unwind_SjLj_* 等符号。
+  target_compile_options(cochat PRIVATE -fexceptions)
+  target_link_options(cochat PRIVATE -Wl,--no-gc-sections)
+  # cpp-httplib 要求 Windows 10 及以上；MinGW 交叉工具链默认的 _WIN32_WINNT 偏低
+  # （Ubuntu 的 mingw-w64 默认 0x0602），这里显式抬高，否则会直接 #error。
+  target_compile_definitions(cochat PRIVATE
+    _WIN32_WINNT=0x0A00
+    WINVER=0x0A00
+    NTDDI_VERSION=0x0A000000
+  )
 endif()
 
 if(MSVC)
-  target_compile_options(intercom-server PRIVATE /W3 /utf-8)
+  target_compile_options(cochat PRIVATE /W3 /utf-8)
 else()
-  target_compile_options(intercom-server PRIVATE -Wall -Wextra -Wno-unused-parameter)
+  target_compile_options(cochat PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-# 构建后交付：可执行文件 + 前端
-# 前端改动也要被同步到输出目录：把 public 目录作为依赖
-file(GLOB_RECURSE INTERCOM_PUBLIC_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/public/*")
-add_custom_target(intercom-public ALL
-  COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:intercom-server>/public
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          ${CMAKE_CURRENT_SOURCE_DIR}/public
-          $<TARGET_FILE_DIR:intercom-server>/public
-  DEPENDS ${INTERCOM_PUBLIC_FILES}
-  COMMENT "同步前端 public/ 到输出目录"
-)
-add_dependencies(intercom-server intercom-public)
+# ---------------------------------------------------------------------------
+# 把前端页面嵌进可执行文件：安装脚本只分发一个二进制，不需要附带 public 目录。
+# 同时保留从磁盘读取的能力（存在 public/index.html 时优先用它，便于开发调试）。
+# ---------------------------------------------------------------------------
+set(PUBLIC_INDEX "${CMAKE_CURRENT_SOURCE_DIR}/public/index.html")
+set(GEN_DIR "${CMAKE_BINARY_DIR}/generated")
 
-add_custom_command(TARGET intercom-server POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:intercom-server>/public
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          ${CMAKE_CURRENT_SOURCE_DIR}/public
-          $<TARGET_FILE_DIR:intercom-server>/public
-)
+file(READ "${PUBLIC_INDEX}" PUBLIC_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," PUBLIC_BYTES "${PUBLIC_HEX}")
+string(LENGTH "${PUBLIC_HEX}" PUBLIC_HEX_LEN)
+math(EXPR PUBLIC_LEN "${PUBLIC_HEX_LEN} / 2")
+
+file(MAKE_DIRECTORY "${GEN_DIR}")
+file(WRITE "${GEN_DIR}/embedded_public.h"
+"// 由 CMake 自动生成，请勿手工修改\n"
+"#pragma once\n"
+"namespace embedded {\n"
+"static const unsigned char kIndexHtml[] = {\n  ${PUBLIC_BYTES}\n};\n"
+"static const unsigned long kIndexHtmlLen = ${PUBLIC_LEN}UL;\n"
+"}  // namespace embedded\n")
+
+# 前端改动后重新生成
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PUBLIC_INDEX}")

@@ -5,10 +5,10 @@ $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $port = 8080
 
-$exe = Join-Path $here "build\intercom-server.exe"
+$exe = Join-Path $here "build\cochat.exe"
 if (-not (Test-Path $exe)) { throw "未找到 $exe，请先运行 build.ps1" }
 
-Write-Host "[1/2] 启动对讲机服务（仅监听 127.0.0.1:$port）…"
+Write-Host "[1/2] 启动 cochat 服务（仅监听 127.0.0.1:$port）…"
 $server = Start-Process -FilePath $exe -ArgumentList "--port", $port -PassThru
 Start-Sleep -Seconds 2
 

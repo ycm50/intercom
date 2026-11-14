@@ -1,0 +1,158 @@
+name: build
+
+# 手动触发；tag 号手动输入；所有构建成功后才创建 tag 与 Release。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布 tag（形如 v1.0.0）；留空则只构建产物，不创建 tag/Release'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            asset: cochat-linux-amd64
+            cxx: g++
+            strip: strip
+            apt: ''
+            sysname: ''
+            sysproc: ''
+          - name: linux-arm64
+            asset: cochat-linux-arm64
+            cxx: aarch64-linux-gnu-g++
+            strip: aarch64-linux-gnu-strip
+            apt: g++-aarch64-linux-gnu
+            sysname: Linux
+            sysproc: aarch64
+          - name: linux-armv7
+            asset: cochat-linux-armv7
+            cxx: arm-linux-gnueabihf-g++
+            strip: arm-linux-gnueabihf-strip
+            apt: g++-arm-linux-gnueabihf
+            sysname: Linux
+            sysproc: armv7
+          - name: windows-amd64
+            asset: cochat-windows-amd64.exe
+            cxx: x86_64-w64-mingw32-g++
+            strip: x86_64-w64-mingw32-strip
+            apt: g++-mingw-w64-x86-64 g++-mingw-w64-x86-64-posix
+            mingw: true
+            sysname: Windows
+            sysproc: x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install-toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build ccache ${{ matrix.apt }}
+          if [ -n "${{ matrix.mingw }}" ]; then
+            # 关键：用 posix 线程模型，默认的 win32 模型下 std::thread / std::mutex 不可用
+            sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+            sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+          fi
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.name }}
+          max-size: 500M
+
+      - name: configure
+        env:
+          CXX_BIN: ${{ matrix.cxx }}
+          SYS_NAME: ${{ matrix.sysname }}
+          SYS_PROC: ${{ matrix.sysproc }}
+        run: |
+          # Windows 不能关 unwind tables：MinGW 的 C++ 异常依赖它，
+          # 关掉后静态链接会缺 __gxx_personality_* / _Unwind_SjLj_* 而链接失败。
+          if [ "$SYS_NAME" = "Windows" ]; then
+            FLAGS="-Os -ffunction-sections -fdata-sections"
+          else
+            FLAGS="-Os -fno-asynchronous-unwind-tables -fno-unwind-tables -ffunction-sections -fdata-sections"
+          fi
+          LDFLAGS="-static -Wl,--gc-sections -Wl,--build-id=none"
+          args=(
+            -S . -B build -G Ninja
+            "-DCMAKE_BUILD_TYPE=MinSizeRel"
+            "-DCMAKE_CXX_COMPILER=$CXX_BIN"
+            "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+            "-DCMAKE_EXE_LINKER_FLAGS=$LDFLAGS"
+            "-DCMAKE_CXX_FLAGS=$FLAGS"
+          )
+          if [ -n "$SYS_NAME" ]; then args+=("-DCMAKE_SYSTEM_NAME=$SYS_NAME"); fi
+          if [ -n "$SYS_PROC" ]; then args+=("-DCMAKE_SYSTEM_PROCESSOR=$SYS_PROC"); fi
+          cmake "${args[@]}"
+
+      - name: compile
+        run: cmake --build build -j $(nproc)
+
+      - name: strip
+        env:
+          STRIP_BIN: ${{ matrix.strip }}
+        run: |
+          for f in build/cochat build/cochat.exe; do
+            [ -f "$f" ] || continue
+            $STRIP_BIN --strip-all "$f" || true
+          done
+
+      - name: package
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir -p out
+          if [ -f build/cochat.exe ]; then
+            cp build/cochat.exe "out/$ASSET"
+          else
+            cp build/cochat "out/$ASSET"
+            chmod +x "out/$ASSET"
+          fi
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: build
+    if: inputs.tag != ''
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: tag-and-release
+        env:
+          TAG: ${{ inputs.tag }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ls -l dist
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag -a "$TAG" -m "release $TAG"
+          git push origin "$TAG"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
+          generate_release_notes: true
+          files: dist/*
+          token: ${{ secrets.GITHUB_TOKEN }}

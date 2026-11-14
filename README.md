@@ -35,6 +35,36 @@
 | 访问控制 | 只监听 127.0.0.1，公网 IP 无法直连，且校验 Cloudflare 请求头 |
 | 账号安全 | 同账号重复登录踢掉旧连接；来电 45 秒无人接听自动取消 |
 
+## 安装（一条命令）
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ycm50/intercom/main/install.sh | sh
+```
+
+### Windows
+
+```powershell
+irm https://raw.githubusercontent.com/ycm50/intercom/main/install.ps1 | iex
+```
+
+两个脚本都会：
+
+1. 按当前系统与架构自动选择对应二进制
+   （`cochat-linux-amd64` / `cochat-linux-arm64` / `cochat-linux-armv7` / `cochat-windows-amd64.exe`）；
+2. 用系统自带的 **curl**（Windows 用 `System32\curl.exe`）下载，不依赖 wget / Invoke-WebRequest；
+3. 安装到 **`~/.local/bin/cochat`**（Windows 为 `%USERPROFILE%\.local\bin\cochat.exe`）；
+4. 检查 PATH，Windows 会自动把目录加进用户 PATH，Linux 会给出提示命令。
+
+可覆盖的环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `COCHAT_VERSION` | 指定版本，默认 `latest` |
+| `COCHAT_BASE_URL` | 覆盖下载根地址（内网镜像 / 自建 CDN） |
+| `COCHAT_PREFIX` | 覆盖安装目录 |
+
 ## 构建
 
 服务端不依赖 OpenSSL，也不依赖 nlohmann/json：密码学（SHA-256 / HMAC / PBKDF2 / 安全随机数）
@@ -47,7 +77,7 @@ $env:UCRT_PATH = 'A:\msys64\ucrt64\bin'   # MSYS2 UCRT64（g++ / cmake / ninja�
 .\build.ps1
 ```
 
-产物 `build\intercom-server.exe` 为静态链接，只依赖系统 DLL（无需任何第三方 DLL）。
+产物 `build\cochat.exe` 为静态链接，只依赖系统 DLL（无需任何第三方 DLL）。
 
 ### Linux（本地 WSL 里交叉/原生构建，**绝不在 VPS 上编译**）
 
@@ -90,27 +120,27 @@ bash build-linux.sh dist      # 输出 dist/intercom-linux-amd64.gz 等静态二
 
 ```powershell
 # 注册：用户名 密码 [--display 展示名]
-intercom-server.exe --add alice 123456 --display 爱丽丝
+cochat.exe --add alice 123456 --display 爱丽丝
 
 # 省略密码时从标准输入读取（密码里可以有空格）
-intercom-server.exe --add alice
+cochat.exe --add alice
 
 # 改密码：服务端重新加盐并保存，明文不落盘
-intercom-server.exe --passwd alice 654321
-intercom-server.exe --passwd alice            # 交互输入
+cochat.exe --passwd alice 654321
+cochat.exe --passwd alice            # 交互输入
 
 # 改用户名（账号文件随之改名，密码与展示名保持不变）
-intercom-server.exe --un alice 新名字
+cochat.exe --un alice 新名字
 
 # 删除 / 列出
-intercom-server.exe --del alice
-intercom-server.exe --list        # 每行一个用户名，可直接管道处理
+cochat.exe --del alice
+cochat.exe --list        # 每行一个用户名，可直接管道处理
 ```
 
 `--list` 只输出用户名，一行一个：
 
 ```
-$ intercom-server.exe --list
+$ cochat.exe --list
 甲
 乙
 张三
@@ -128,9 +158,9 @@ $ intercom-server.exe --list
 > 用 ASCII 作为主键才可靠。展示名可以随便用中文，界面上显示的是展示名。
 
 ```powershell
-intercom-server.exe --add alice "密码abc123" --display "张三丰"   # ID 英文，密码中文，展示名中文
-intercom-server.exe --add bob "p@ss w#rd!" --display "鲍勃"
-intercom-server.exe --add 乙 pass123456                          # 拒绝：ID 不能用汉字
+cochat.exe --add alice "密码abc123" --display "张三丰"   # ID 英文，密码中文，展示名中文
+cochat.exe --add bob "p@ss w#rd!" --display "鲍勃"
+cochat.exe --add 乙 pass123456                          # 拒绝：ID 不能用汉字
 ```
 
 用户名当文件名时会做**百分号转义**（ASCII 下其实就是原样），文件里的 `user` 字段保存原始 ID。
@@ -151,7 +181,7 @@ Linux 服务器（推荐）：
 # 本地 WSL 构建后推送
 bash build-linux.sh dist
 scp dist/intercom-linux-amd64.gz root@服务器:/tmp/
-ssh root@服务器 "gunzip -c /tmp/intercom-linux-amd64.gz > /opt/intercom/intercom-server && chmod +x /opt/intercom/intercom-server"
+ssh root@服务器 "gunzip -c /tmp/intercom-linux-amd64.gz > /opt/intercom/cochat && chmod +x /opt/intercom/cochat"
 
 # 服务器上安装为 systemd 服务
 bash deploy/deploy.sh /opt/intercom
@@ -165,7 +195,7 @@ systemctl status intercom
 分开跑：
 
 ```powershell
-.\build\intercom-server.exe --port 8080
+.\build\cochat.exe --port 8080
 .\tools\cloudflared.exe tunnel --url http://127.0.0.1:8080
 ```
 

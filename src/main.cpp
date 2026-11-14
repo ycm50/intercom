@@ -26,6 +26,15 @@
 #include "protocol.h"
 #include "util.h"
 
+// 由 CMake 生成：把 public/index.html 以字节数组形式嵌进可执行文件，
+// 这样安装脚本只需分发一个二进制，找不到 public 目录也能正常提供前端。
+#if defined(__has_include)
+#if __has_include("embedded_public.h")
+#include "embedded_public.h"
+#define INTERCOM_HAS_EMBEDDED_PUBLIC 1
+#endif
+#endif
+
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -743,6 +752,33 @@ void configure_server(httplib::Server &srv) {
     }
   });
 
+  // 前端：优先用磁盘上的 public/index.html（便于改样式后刷新即可见），
+  // 找不到就用编译时内嵌的那一份，保证单文件二进制也能独立运行。
+  srv.Get("/", [](const httplib::Request &, httplib::Response &res) {
+    res.set_header("Cache-Control", "no-cache, no-store, must-revalidate");
+    std::string disk = util::join_path(g_cfg.public_dir, "index.html");
+    std::string html;
+    if (util::file_exists(disk) && util::read_file(disk, html)) {
+      res.set_content(html, "text/html; charset=utf-8");
+      return;
+    }
+#if defined(INTERCOM_HAS_EMBEDDED_PUBLIC)
+    res.set_content(
+        std::string(reinterpret_cast<const char *>(embedded::kIndexHtml), embedded::kIndexHtmlLen),
+        "text/html; charset=utf-8");
+#else
+    res.status = 500;
+    res.set_content("500 未找到前端文件（public/index.html）", "text/plain; charset=utf-8");
+#endif
+  });
+
+  srv.Get("/index.html", [](const httplib::Request &req, httplib::Response &res) {
+    (void)req;
+    res.status = 302;
+    res.set_header("Location", "/");
+  });
+
+  // 其余静态资源（如以后加了图标/样式）仍从 public 目录取
   srv.set_mount_point("/", g_cfg.public_dir);
 }
 

@@ -207,7 +207,10 @@ void scan_proc(std::vector<Instance> &found) {
   while (dirent *ent = ::readdir(dir)) {
     const char *name = ent->d_name;
     if (name[0] < '0' || name[0] > '9') continue;
-    const long pid = std::strtol(name, nullptr, 10);
+    long pid = 0;
+    // 不用 std::strtol：glibc 2.38+ 会把它重定向到 __isoc23_strtol，
+    // 在 Debian 12 上就是"符号找不到、程序起不来"（详见 util.h 的说明）。
+    if (!util::parse_long(name, pid)) continue;
     if (pid == self) continue;
     if (std::any_of(found.begin(), found.end(), [pid](const Instance &i) { return i.pid == pid; }))
       continue;  // 自述文件里已经有了
@@ -295,9 +298,10 @@ InstanceProbe probe_instance(int port) {
   return probe;
 }
 
-namespace {
-
-void describe(Instance &inst) {
+// 补上"此刻状态"。单独暴露出来而不是塞进 discover_instances：--res 只需要
+// pid 和 argv，为每个实例都发一次 HTTP 探测纯属浪费，而探测还可能因为实例
+// 卡住而拖慢重启。
+void describe_instance(Instance &inst) {
   // 自述文件里的地址先兜底：进程重启或暂时连不上时它仍然是"上次对外的地址"。
   std::string fallback = inst.public_url;
   const InstanceProbe probe = probe_instance(inst.port);
@@ -314,6 +318,8 @@ void describe(Instance &inst) {
     inst.state = probe.status == 403 ? "拒绝访问（需要登录）" : "无响应";
   }
 }
+
+namespace {
 
 void print_row(const Instance &inst) {
   std::string url = inst.public_url.empty() ? "(无隧道)" : inst.public_url;
@@ -373,7 +379,8 @@ void prune_instance_records() {
   const std::string dir = instances_dir();
   for (const auto &path : util::list_files(dir, ".json")) {
     const std::string name = base_name(path);
-    const long pid = std::strtol(name.c_str(), nullptr, 10);
+    long pid = 0;
+    if (!util::parse_long(name.c_str(), pid)) continue;
     // 文件名不是 pid.json 的（比如手工放进去的）不动，删掉别人的自述才是事故。
     if (pid <= 0 || !util::starts_with(name, std::to_string(pid) + ".")) continue;
     if (pid == self_pid()) continue;
@@ -436,7 +443,7 @@ int print_current_tunnels(const std::string &data_override, int port_override) {
 
   std::printf("%-8s %-6s %-46s %-24s\n", "pid", "端口", "公网地址", "状态");
   for (auto &inst : instances) {
-    describe(inst);
+    describe_instance(inst);
     print_row(inst);
   }
   return 0;

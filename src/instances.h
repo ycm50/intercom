@@ -46,7 +46,14 @@ void remove_instance_record();
 void prune_instance_records();
 
 // 当前这台机器上活着（或至少自述过）的全部实例。
+//
+// 返回时 state / public_url 可能还空着 —— 它们要靠 describe_instance 向实例
+// 发一次 /api/info 才知道。探测是网络调用，跟"有哪些实例"是两件事，分开能
+// 让不需要状态的调用方（--res）不必为每个实例都打一次 HTTP。
 std::vector<Instance> discover_instances();
+
+// 补齐某个实例的运行状态（隧道通不通、公网地址）。会发一次短超时 HTTP 探测。
+void describe_instance(Instance &inst);
 
 
 // 进程是否还活着。POSIX 用 kill(pid,0)，Windows 用 OpenProcess+零超时等待。

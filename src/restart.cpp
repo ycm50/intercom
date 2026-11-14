@@ -142,7 +142,10 @@ std::vector<ProcInfo> discover_proc() {
   while (dirent *ent = ::readdir(dir)) {
     const char *name = ent->d_name;
     if (name[0] < '0' || name[0] > '9') continue;
-    const long pid = std::strtol(name, nullptr, 10);
+    long pid = 0;
+    // 不用 std::strtol：glibc 2.38+ 会把它重定向到 __isoc23_strtol，
+    // 目标机 glibc 较老时整个程序起不来（详见 util.h 的说明）。
+    if (!util::parse_long(name, pid)) continue;
     if (pid == self) continue;  // 绝不重启自己
     ProcInfo info = read_proc(pid);
     if (info.argv.empty()) continue;  // 读目录与读 cmdline 之间进程没了
@@ -269,10 +272,10 @@ int restart_one(const ProcInfo &info) {
 
   // 手工启动：原样重放 argv。操作者的命令行参数是这个实例唯一的"怎么跑"描述，
   // 不做任何重建或规范化。
-  if (!terminate_process(info.pid)) {
-    std::fprintf(stderr, "error: pid %ld 没有退出\n", info.pid);
-    return 1;
-  }
+  //
+  // 【顺序】必须先 fork 再 terminate。目标 pid 可能就是本进程（面板点"重启"
+  // 就是这种情况），先 terminate 的话本进程当场消失，后面的 fork 根本执行不到，
+  // 现场表现就是"点了重启，服务没了"。Windows 那边同理（见 spawn_replacement_win）。
   const pid_t pid = ::fork();
   if (pid < 0) {
     std::fprintf(stderr, "error: fork 失败: %s\n", std::strerror(errno));
@@ -307,6 +310,25 @@ int restart_one(const ProcInfo &info) {
     return 1;
   }
   std::printf("  已用同样的参数启动 pid %d\n", static_cast<int>(pid));
+
+  // 新实例已经在跑，这时才收掉旧进程。
+  //
+  // 目标是本进程时不再 terminate：从"自己"里面杀"自己"，之后一行代码都不会
+  // 执行，wait_for_tunnel 也没机会确认新实例真的对外服务。直接退出更诚实 ——
+  // 新进程会重新写自述文件，调用方刷新就能看到。
+  if (info.pid == self_pid()) {
+    std::printf("  本实例即将退出，新实例已接管\n");
+    std::fflush(stdout);
+    // 给 HTTP 响应一点时间发出去（面板上的"重启"要能先拿到结果，
+    // 否则浏览器看到的是连接被重置，用户会以为点坏了）。
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    ::_exit(0);
+  }
+
+  if (!terminate_process(info.pid)) {
+    std::fprintf(stderr, "error: pid %ld 没有退出\n", info.pid);
+    return 1;
+  }
   wait_for_tunnel(inst, previous_url);
   return 0;
 }
@@ -314,9 +336,12 @@ int restart_one(const ProcInfo &info) {
 int restart_posix(const std::string &pid_arg) {
   std::vector<ProcInfo> targets;
   if (!pid_arg.empty()) {
-    char *end = nullptr;
-    const long pid = std::strtol(pid_arg.c_str(), &end, 10);
-    if (end == pid_arg.c_str() || (end && *end != '\0') || pid <= 0) {
+    const char *end = nullptr;
+    long pid = 0;
+    // 整串必须都是数字：parse_long 允许尾随垃圾（与 strtol 一致），
+    // 所以这里额外要求 end 指到结尾 —— "123abc" 不该被当成 pid 123。
+    if (!util::parse_long(pid_arg.c_str(), pid, &end) || end == nullptr || *end != '\0' ||
+        pid <= 0) {
       std::fprintf(stderr, "error: --res 需要数字 pid，收到 '%s'\n", pid_arg.c_str());
       return 1;
     }
@@ -387,7 +412,14 @@ bool terminate_process(long pid) {
   return rc == WAIT_OBJECT_0;
 }
 
-int restart_one_win(const Instance &info) {
+// 按自述文件里的 argv/cwd 原样拉起一个新实例。成功返回 0。
+//
+// 【顺序是这里唯一重要的东西】目标 pid 可能就是**我们自己的进程**（管理面板
+// 里的"重启"就是这种情况：面板跑在这个进程里，重启号令由它自己执行）。
+// 先 TerminateProcess 再 CreateProcess 的话，执行到第二句时进程已经在被终结，
+// 新实例根本起不来 —— 现场表现是"点重启，服务就没了"。
+// 所以拆成两步：先 spawn，再由调用方 terminate。
+int spawn_replacement_win(const Instance &info) {
   // 同上：动手前确认这个 pid 现在还是 cochat，避免 pid 复用后误杀无关进程。
   const std::string image = process_image_name(info.pid);
   if (image.empty()) {
@@ -412,11 +444,6 @@ int restart_one_win(const Instance &info) {
   }
   const InstanceProbe before = probe_instance(info.port);
   const std::string previous_url = before.ok ? before.tunnel_url : std::string();
-
-  if (!terminate_process(info.pid)) {
-    std::fprintf(stderr, "error: pid %ld 无法终止（权限不足？）\n", info.pid);
-    return 1;
-  }
 
   std::wstring cmdline;
   for (size_t i = 0; i < info.argv.size(); ++i) {
@@ -451,9 +478,34 @@ int restart_one_win(const Instance &info) {
   std::printf("  已用同样的参数启动 pid %lu\n", static_cast<unsigned long>(pi.dwProcessId));
   ::CloseHandle(pi.hThread);
   ::CloseHandle(pi.hProcess);
+
+  // 新实例已经在跑了，这时才允许收掉旧进程。顺序反过来就是"点了重启，
+  // 服务直接没了"——因为执行到 TerminateProcess 时本进程已经被终结，
+  // 后面的 CreateProcess 根本没机会运行。
+  //
+  // 目标就是本进程时（管理面板点"重启"），不能再走 terminate_process：
+  // 那是从"自己"里面杀"自己"，之后一行代码都不会执行，新实例虽然起来了，
+  // 但 wait_for_tunnel 没机会验证它是否真的对外服务。直接退出更诚实：
+  // 新进程会重新写自述文件，调用方（浏览器）刷新后就能看到。
+  if (info.pid == static_cast<long>(::GetCurrentProcessId())) {
+    std::printf("  本实例即将退出，新实例已接管（面板会在几秒后恢复）\n");
+    std::fflush(stdout);
+    // 给 HTTP 响应一点时间发出去：面板上的"重启"要能先拿到结果，否则
+    // 浏览器看到的是连接被重置，用户会以为点坏了。
+    ::Sleep(400);
+    ::ExitProcess(0);
+  }
+
+  if (!terminate_process(info.pid)) {
+    std::fprintf(stderr, "error: pid %ld 无法终止（权限不足？）\n", info.pid);
+    return 1;
+  }
   wait_for_tunnel(info, previous_url);
   return 0;
 }
+
+// restart_one_win 的语义别名：名字说明"这里会先起后杀"。
+int restart_one_win(const Instance &info) { return spawn_replacement_win(info); }
 
 int restart_windows(const std::string &pid_arg) {
   const std::vector<Instance> all = discover_instances();
@@ -465,9 +517,12 @@ int restart_windows(const std::string &pid_arg) {
     return 1;
   }
   if (!pid_arg.empty()) {
-    char *end = nullptr;
-    const long pid = std::strtol(pid_arg.c_str(), &end, 10);
-    if (end == pid_arg.c_str() || (end && *end != '\0') || pid <= 0) {
+    const char *end = nullptr;
+    long pid = 0;
+    // 整串必须都是数字：parse_long 允许尾随垃圾（与 strtol 一致），
+    // 所以这里额外要求 end 指到结尾 —— "123abc" 不该被当成 pid 123。
+    if (!util::parse_long(pid_arg.c_str(), pid, &end) || end == nullptr || *end != '\0' ||
+        pid <= 0) {
       std::fprintf(stderr, "error: --res 需要数字 pid，收到 '%s'\n", pid_arg.c_str());
       return 1;
     }

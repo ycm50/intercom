@@ -231,7 +231,17 @@ jobs:
           else
             FLAGS="-Os -fno-asynchronous-unwind-tables -fno-unwind-tables -ffunction-sections -fdata-sections"
           fi
-          LDFLAGS="-static -Wl,--gc-sections -Wl,--build-id=none"
+          # 【不能整体 -static】主程序运行时要 dlopen 隧道插件（插件自己还链
+          # libssl，必然是动态库）。整体 -static 会把 libc 也编进可执行文件，
+          # 进程里于是有两份 libc/libstdc++，插件一被调用就段错误。
+          # 改成混合链接：libc 动态（系统必有），libstdc++/libgcc 静态
+          # （目标机不装 libstdc++ 也能跑）。
+          if [ "$SYS_NAME" = "Windows" ]; then
+            # Windows 上 DLL 各自带 CRT，整体静态链接反而更稳，保持原样
+            LDFLAGS="-static -Wl,--gc-sections -Wl,--build-id=none"
+          else
+            LDFLAGS="-static-libgcc -static-libstdc++ -Wl,--gc-sections -Wl,--build-id=none"
+          fi
           args=(
             -S . -B build -G Ninja
             "-DCMAKE_BUILD_TYPE=MinSizeRel"
@@ -288,13 +298,17 @@ jobs:
             echo "产物架构不含 $WANT"; file "$BIN"; exit 1
           fi
 
-          # Linux 产物必须是静态的：目标机不装任何运行库也能跑
+          # Linux 产物允许依赖 libc / libm（混合链接），但**不能**依赖
+          # libstdc++ / libgcc_s —— 那两个是"目标机没装就跑不起来"的典型。
+          # 同时也不能是"什么都静态"：那样 dlopen 插件会崩（见 LDFLAGS 的注释）。
           if [ "$EXPECT" = "ELF" ]; then
             if ldd "$BIN" 2>&1 | grep -q 'not a dynamic executable'; then
-              echo "静态链接确认"
-            else
-              echo "产物不是静态链接："; ldd "$BIN" || true; exit 1
+              echo "产物是全静态的：主程序带 dlopen 会与插件里的动态 libc 冲突"; exit 1
             fi
+            if ldd "$BIN" 2>&1 | grep -qE 'libstdc\+\+|libgcc_s'; then
+              echo "产物仍依赖 libstdc++/libgcc_s：目标机可能没装"; ldd "$BIN"; exit 1
+            fi
+            echo "混合链接确认（libc 动态，libstdc++ 静态）"
           fi
 
       - name: package

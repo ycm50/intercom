@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <climits>
 #include <cstring>
 #include <ctime>
 #include <cstdlib>
@@ -28,6 +29,44 @@ std::string trim(const std::string &s) {
   while (b < e && static_cast<unsigned char>(s[b]) <= ' ') ++b;
   while (e > b && static_cast<unsigned char>(s[e - 1]) <= ' ') --e;
   return s.substr(b, e - b);
+}
+
+bool parse_long(const char *s, long &out, const char **end) {
+  out = 0;
+  if (s == nullptr) {
+    if (end != nullptr) *end = nullptr;
+    return false;
+  }
+  const char *p = s;
+  // 前导空白：与 strtol 一致。
+  while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\f' || *p == '\v') ++p;
+  bool neg = false;
+  if (*p == '+' || *p == '-') {
+    neg = (*p == '-');
+    ++p;
+  }
+  if (*p < '0' || *p > '9') {
+    // 没有数字：明确告诉调用方失败。本项目所有调用点都要求真的解析出数字，
+    // 0 是合法的 pid/端口，不能拿它当错误值。
+    if (end != nullptr) *end = s;
+    return false;
+  }
+  // 用无符号累加再判断溢出：直接对 long 乘加，溢出是 UB。
+  unsigned long acc = 0;
+  const unsigned long limit =
+      neg ? static_cast<unsigned long>(-(LONG_MIN + 1)) + 1UL : static_cast<unsigned long>(LONG_MAX);
+  while (*p >= '0' && *p <= '9') {
+    const unsigned long d = static_cast<unsigned long>(*p - '0');
+    if (acc > (limit - d) / 10) {
+      if (end != nullptr) *end = p;
+      return false;
+    }
+    acc = acc * 10 + d;
+    ++p;
+  }
+  out = neg ? static_cast<long>(0UL - acc) : static_cast<long>(acc);
+  if (end != nullptr) *end = p;
+  return true;
 }
 
 std::string to_lower(std::string s) {

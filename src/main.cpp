@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -26,6 +27,7 @@
 #include "json.h"
 #include "passwd.h"
 #include "protocol.h"
+#include "panel/panel.h"
 #include "restart.h"
 #include "tunnel/loader.h"
 #include "util.h"
@@ -71,6 +73,10 @@ struct Config {
 
 Config g_cfg;
 auth::Store *g_store = nullptr;
+// 内建隧道插件。面板的隧道读数要反映"此刻"的真实状态（含插件注册到的域名），
+// 而不是启动命令行里 --tunnel-url 写了什么 —— 后者只是一个静态声明。
+// 声明成全局指针是因为面板回调注册得比插件加载早，只能按"调用时再读"取。
+tunnel::Loader *g_tunnel_loader = nullptr;
 hub::Hub g_hub;
 std::atomic<int64_t> g_started_at{0};
 std::atomic<unsigned long long> g_msg_count{0};
@@ -101,10 +107,21 @@ std::map<std::string, DetachedRoom> g_detached;  // key: 掉线的 user
 
 /* ------------------------------ 小工具 ------------------------------ */
 
+// 日志环形缓冲：面板要能看到"刚才发生了什么"，而 stdout 已经被重定向到文件
+// 或 systemd journal，浏览器拿不到。只留最近 kLogRing 行，不落盘。
+constexpr size_t kLogRing = 500;
+std::mutex g_log_mu;
+std::deque<std::string> g_log_ring;
+
 void log_line(const std::string &msg) {
-  std::string line = "[" + util::now_string() + "] " + msg + "\n";
-  std::fputs(line.c_str(), stdout);
+  std::string line = "[" + util::now_string() + "] " + msg;
+  std::fputs((line + "\n").c_str(), stdout);
   std::fflush(stdout);
+  std::lock_guard<std::mutex> lk(g_log_mu);
+  g_log_ring.push_back(line);
+  // 只丢最老的：面板日志的价值在于"最近发生的事"，不是完整历史
+  // （完整历史在 stdout / journal 里）。
+  while (g_log_ring.size() > kLogRing) g_log_ring.pop_front();
 }
 
 std::string make_token() { return util::random_token(24); }
@@ -992,6 +1009,16 @@ static int run_cli(const std::vector<std::string> &argv) {
         // 兼容旧写法：--add 用户名 密码 展示名
         display = argv[++i];
       }
+      // admin 是面板账号，只能改密码，不能新建/删除/改名。命令行这一层也要拦，
+      // 否则运维一条 --del admin 就永久失去面板入口，而服务还在跑、无法自救。
+      if (panel::is_reserved_user(user)) {
+        std::fprintf(stderr,
+                     "error: %s 是面板保留账号，不能用 --add 新建/覆盖。改密码请用 "
+                     "--passwd %s\n",
+                     panel::kAdminUser, panel::kAdminUser);
+        rc = 1;
+        continue;
+      }
       auth::Status st = store.create(user, display, pass, err);
       if (st == auth::Status::Ok) std::printf("已注册用户 %s（%s）\n", user.c_str(), (display.empty() ? user.c_str() : display.c_str()));
       else {
@@ -1006,6 +1033,15 @@ static int run_cli(const std::vector<std::string> &argv) {
     } else if (a == "--un" && i + 2 < argc) {
       std::string oldu = argv[++i];
       std::string newu = argv[++i];
+      // 源和目标都要拦：admin -> other 会让面板失去账号，
+      // other -> admin 会占用保留名，两种都是把自己锁在门外。
+      if (panel::is_reserved_user(oldu) || panel::is_reserved_user(newu)) {
+        std::fprintf(stderr,
+                     "error: %s 是面板保留账号，不能改名（源或目标都不行）\n",
+                     panel::kAdminUser);
+        rc = 1;
+        continue;
+      }
       auth::Status st = store.rename(oldu, newu, err);
       if (st == auth::Status::Ok)
         std::printf("已重命名 %s -> %s\n", oldu.c_str(), newu.c_str());
@@ -1015,6 +1051,13 @@ static int run_cli(const std::vector<std::string> &argv) {
       }
     } else if (a == "--del" && i + 1 < argc) {
       std::string user = argv[++i];
+      if (panel::is_reserved_user(user)) {
+        std::fprintf(stderr,
+                     "error: %s 是面板保留账号，不能删除（否则再也进不去 /admin）\n",
+                     panel::kAdminUser);
+        rc = 1;
+        continue;
+      }
       auth::Status st = store.remove(user, err);
       if (st == auth::Status::Ok) std::printf("已删除用户 %s\n", user.c_str());
       else {
@@ -1226,6 +1269,148 @@ int main(int argc, char **argv) {
   }
   std::printf("  存储策略  聊天内容、语音、视频全部只在内存中转发，不写入磁盘\n\n");
 
+  // 隧道加载器必须在面板接线之前声明：面板的隧道读数是"调用时再取"，
+  // 但它拿的是这个对象的地址，对象得先存在。
+  tunnel::Loader tunnel_loader;
+  g_tunnel_loader = &tunnel_loader;
+
+  // ---- 管理面板 ------------------------------------------------------------
+  // 面板挂在同一个 httplib::Server 的 /admin 前缀下，因此"仅回环/仅隧道来源"
+  // 这条访问控制、CSP 头、超时全部自动继承，不需要为它再造一套监听。
+  //
+  // admin 账号：第一次启动自动建一个随机密码并打印一次；已存在则绝不覆盖。
+  // 面板装不起来不是错误 —— 聊天服务照常提供。
+  {
+    std::string gen_pwd;
+    std::string admin_err;
+    if (!panel::ensure_admin(store, gen_pwd, admin_err)) {
+      std::fprintf(stderr, "警告: 无法保证面板账号可用: %s\n", admin_err.c_str());
+    } else if (!gen_pwd.empty()) {
+      // 不用方框：中文字符宽度不固定，框线在终端里永远对齐不了，
+      // 反而让密码那一行看起来像排版坏了。分行打印更清楚。
+      std::printf("\n  ── 管理面板 ─────────────────────────────────\n");
+      std::printf("  地址      /admin\n");
+      std::printf("  账号      admin\n");
+      std::printf("  密码      %s\n", gen_pwd.c_str());
+      std::printf("  ────────────────────────────────────────────\n");
+      std::printf("  这串密码只显示这一次。改密码：\n");
+      std::printf("    cochat --passwd admin          （命令行）\n");
+      std::printf("    面板内「账号」标签下的「改密」  （登录之后）\n\n");
+      log_line("管理面板账号已创建：admin");
+    }
+
+    panel::Host host;
+    host.store = &store;
+    // info/stats：面板要看到和服务自己一致的读数，所以复用同一批原子量，
+    // 而不是另算一份（两份数字对不上会让运维怀疑哪边是对的）。
+    // 这两个直接读全局量、不捕获局部变量：回调会被面板长期持有，
+    // 捕引用会在 main 返回后悬垂；而且这些全局量本来就是唯一真相。
+    host.info_json = []() {
+      jsonx::Json j;
+      j["name"] = "局域网对讲机";
+      j["uptime"] = static_cast<long long>(util::now_sec() - g_started_at.load());
+      j["online"] = static_cast<long long>(g_hub.online_count());
+      j["rooms"] = static_cast<long long>(g_hub.room_count());
+      j["bind"] = g_cfg.bind_host + ":" + std::to_string(g_cfg.port);
+      j["data_dir"] = g_cfg.data_dir;
+      j["accounts_dir"] = g_store ? g_store->dir() : std::string();
+      j["loopback_only"] = g_cfg.loopback_only;
+      // 面板要显示"这台机器什么时候起来的"：给绝对时间戳，格式化交给前端
+      // （前端按浏览器时区渲染，服务端只保证给出一个无歧义的 Unix 秒）。
+      j["started_at"] = static_cast<long long>(g_started_at.load());
+      j["pid"] = static_cast<long long>(
+#if defined(_WIN32)
+          ::GetCurrentProcessId()
+#else
+          ::getpid()
+#endif
+      );
+      return jsonx::dump(j);
+    };
+    host.stats_json = []() {
+      jsonx::Json j;
+      j["messages"] = static_cast<long long>(g_msg_count.load());
+      j["media"] = static_cast<long long>(g_media_count.load());
+      j["signals"] = static_cast<long long>(g_signal_count.load());
+      return jsonx::dump(j);
+    };
+    host.tunnel_json = []() {
+      jsonx::Json t;
+      // 插件在位时以它为准：它知道"此刻"连没连上、域名是什么。
+      // g_cfg 里的 tunnel_url 只在没有插件（外部 cloudflared）时才有意义。
+      if (g_tunnel_loader != nullptr && g_tunnel_loader->available()) {
+        const tunnel::Status st = g_tunnel_loader->status();
+        t["url"] = st.url();
+        t["source"] = st.url().empty() ? std::string() : std::string("plugin");
+        t["configured"] = true;
+        t["plugin"] = true;
+        t["version"] = st.version;
+        if (st.connected && st.registered) {
+          t["state"] = "已连接";
+        } else if (st.connected) {
+          t["state"] = "已连边缘，注册中";
+        } else if (!st.error.empty()) {
+          t["state"] = "连接失败：" + st.error;
+        } else {
+          t["state"] = "正在连接";
+        }
+      } else {
+        t["url"] = g_cfg.tunnel_url;
+        t["source"] = g_cfg.tunnel_source;
+        t["configured"] = !g_cfg.tunnel_url.empty() || g_cfg.tunnel_mode != "off";
+        t["plugin"] = false;
+        t["state"] = g_cfg.tunnel_url.empty()
+                         ? (g_cfg.tunnel_mode == "off" ? "隧道已关闭" : "隧道未建立")
+                         : "已连接（外部 cloudflared）";
+      }
+      return jsonx::dump(t);
+    };
+    host.instances_json = []() {
+      // 实例列表直接复用 --cur 的那套发现逻辑（含自述文件与活体探测），
+      // 面板自己再扫一遍 /proc 只会得到另一份可能不一致的结果。
+      jsonx::Json arr = jsonx::Json::array();
+      for (auto inst : app::discover_instances()) {
+        // 面板上的"状态"就是 --cur 那一列，所以复用同一个探测函数：
+        // 面板自己再打一次 /api/info 只会得到另一份可能不一致的结果。
+        app::describe_instance(inst);
+        jsonx::Json o;
+        o["pid"] = static_cast<long long>(inst.pid);
+        o["port"] = inst.port;
+        o["url"] = inst.public_url;
+        o["state"] = inst.state;
+        o["data_dir"] = inst.data_dir;
+        std::string cmd;
+        for (size_t i = 0; i < inst.argv.size(); ++i) cmd += (i ? " " : "") + inst.argv[i];
+        o["argv"] = cmd;
+        arr.push_back(o);
+      }
+      return jsonx::dump(arr);
+    };
+    host.logs_json = []() {
+      jsonx::Json arr = jsonx::Json::array();
+      std::lock_guard<std::mutex> lk(g_log_mu);
+      for (const auto &line : g_log_ring) arr.push_back(jsonx::Json(line));
+      return jsonx::dump(arr);
+    };
+    host.log = [](const std::string &line) { log_line(line); };
+    host.restart_instance = [](const std::string &pid) {
+      // 面板里的"重启"复用 --res 的实现：同样先验 pid 仍是 cochat，同样区分
+      // systemd 托管与手工启动。这里不另写一套，否则两处规则迟早分叉。
+      const int rc = app::restart_instance(pid);
+      return std::make_pair(rc == 0, rc == 0 ? "已发出重启" : "重启失败，详见服务端日志");
+    };
+    // 账号动作集中在 panel::install_account_actions 里填（保留名规则只写一处）。
+    panel::install_account_actions(store, host);
+
+    std::string panel_err;
+    if (!panel::register_routes(static_cast<void *>(&server), host, g_cfg.public_dir,
+                                g_cfg.data_dir, panel_err)) {
+      std::printf("  管理面板  未启用（%s）\n", panel_err.c_str());
+    } else {
+      std::printf("  管理面板  http://%s:%d/admin\n", g_cfg.bind_host.c_str(), g_cfg.port);
+    }
+  }
+
   // 先 bind 再起隧道，最后才 accept：隧道要连的 origin 就是本进程这个端口，
   // 端口还没绑上就去转发，头几个请求必然 502。bind_to_port + listen_after_bind
   // 正好把"端口已被占用"和"开始接请求"拆成两步。
@@ -1239,7 +1424,6 @@ int main(int argc, char **argv) {
   // ---- 内建隧道插件 --------------------------------------------------------
   // 加载失败一律不是错误：可能没编插件（缺 OpenSSL）、可能被安全软件拦下、
   // 可能版本不符。这三种都只表达成"没有隧道"，服务照样提供局域网访问。
-  tunnel::Loader tunnel_loader;
   if (g_cfg.tunnel_enable && g_cfg.tunnel_mode != "off") {
     std::string load_err;
     if (!tunnel_loader.load(load_err)) {

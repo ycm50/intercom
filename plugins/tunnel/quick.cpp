@@ -458,13 +458,23 @@ bool decode_chunked(const std::string& in, std::string& out) {
         if (semi != std::string::npos) size_line.resize(semi);
         size_line = trim(size_line);
         if (size_line.empty()) return false;
-        // strtoull 会默默接受前缀垃圾，先自己验一遍"整行都是十六进制数字"。
+        // 自己解析十六进制，不用 std::strtoull。
+        //
+        // 两个原因：一是 glibc 2.38+ 会把它重定向到 __isoc23_strtoull，
+        // 而插件是动态库、宿主的 libstdc++ 未必是同一代，符号对不上就整个加载失败；
+        // 二是 strtoull 会默默接受前缀垃圾，本来也要先自己验一遍。
+        unsigned long long len = 0;
         for (char c : size_line) {
-            const bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-                             (c >= 'A' && c <= 'F');
-            if (!hex) return false;
+            unsigned d = 0;
+            if (c >= '0' && c <= '9') d = static_cast<unsigned>(c - '0');
+            else if (c >= 'a' && c <= 'f') d = static_cast<unsigned>(c - 'a') + 10;
+            else if (c >= 'A' && c <= 'F') d = static_cast<unsigned>(c - 'A') + 10;
+            else return false;  // 不是十六进制数字，这个 chunk 头就是坏的
+            // 长度字段最多 16 位十六进制；再长必然超出 size_t，直接判失败，
+            // 免得在下面乘加时溢出。
+            if (len > (0xFFFFFFFFFFFFFFFFULL - d) / 16) return false;
+            len = len * 16 + d;
         }
-        const unsigned long long len = std::strtoull(size_line.c_str(), nullptr, 16);
         pos = eol + 2;
         if (len > in.size()) return false;  // 明显不可能的分块长度，顺带挡住溢出
         if (len == 0) return true;          // 末块

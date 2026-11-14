@@ -24,7 +24,18 @@ add_executable(cochat
   src/restart.cpp
   src/passwd.cpp
   src/tunnel/loader.cpp
+  src/panel/admin.cpp
+  src/panel/auth.cpp
+  src/panel/routes.cpp
+  src/panel/ui.cpp
 )
+
+# glibc 兼容层：只对 ELF 目标有意义（它给 libstdc++.a 内部引用的 C23 符号
+# 提供 glibc 内部实现的转发）。Windows 的 CRT 没有这套符号，加进去只会
+# 变成 undefined reference，所以按平台挑。
+if(NOT WIN32)
+  target_sources(cochat PRIVATE src/compat/glibc_strtoul.cpp)
+endif()
 
 target_include_directories(cochat PRIVATE src third_party "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
@@ -119,6 +130,11 @@ if(COCHAT_BUILD_TUNNEL)
   # 它天生就是"运行时按路径加载"的产物，语义正好对应我们的用法。
   add_library(cochat_tunnel MODULE ${TUNNEL_SOURCES})
 
+  # 和主程序同一个理由：插件里也静态链了 libstdc++，同样会引用 C23 符号。
+  if(NOT WIN32)
+    target_sources(cochat_tunnel PRIVATE src/compat/glibc_strtoul.cpp)
+  endif()
+
   target_include_directories(cochat_tunnel PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/plugins/tunnel
@@ -147,11 +163,24 @@ if(COCHAT_BUILD_TUNNEL)
     target_link_libraries(cochat_tunnel PRIVATE ws2_32 crypt32)
     target_compile_definitions(cochat_tunnel PRIVATE
       _WIN32_WINNT=0x0A00 WINVER=0x0A00 NTDDI_VERSION=0x0A000000)
-    target_link_options(cochat_tunnel PRIVATE -static-libgcc -static-libstdc++)
     # Windows 的 MODULE 库默认产出 .dll，无需改后缀
   else()
     target_link_libraries(cochat_tunnel PRIVATE Threads::Threads)
   endif()
+
+  # 【必须静态链接 libstdc++ / libgcc，两个平台都要】
+  #
+  # 主程序是按"拿到就能跑"发的静态二进制：它的 libstdc++ 已经编进可执行文件里。
+  # 插件如果还去依赖动态 libstdc++.so.6，进程里就同时存在两套 C++ 运行时 ——
+  # 一边的 std::string / std::mutex / 异常表与另一边的布局不一致，
+  # 调用进插件的第一行就可能段错误。
+  #
+  # 实测：Linux 静态主程序 + 动态插件，./cochat --tunnel 立刻 Segmentation fault
+  # （不带 --tunnel 一切正常，因为那时根本不碰插件）。Windows 上同样的组合
+  # 只是表现得温和些（DLL 自己带一份 CRT），但这属于运气而不是设计。
+  #
+  # 注意 OpenSSL 仍是动态依赖：它在系统里有稳定的 ABI，且目标机本来就需要它。
+  target_link_options(cochat_tunnel PRIVATE -static-libgcc -static-libstdc++)
 
   if(NOT MSVC)
     target_compile_options(cochat_tunnel PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -211,8 +240,23 @@ if(COCHAT_BUILD_TESTS)
   endif()
   add_test(NAME ops COMMAND ops_test)
 
+  # 面板保留账号规则。只链 admin.cpp：它依赖 auth.cpp（is_reserved_user 只是
+  # 字符串比较，但同一个翻译单元里还有 ensure_admin，需要 auth::Store 的符号）。
+  # 不链 routes.cpp / ui.cpp —— 那两个带着 httplib 和几十 KB 内嵌页面，
+  # 为了测一个纯函数不值得把整条依赖拽进来。
+  add_executable(panel_test tests/panel_test.cpp src/panel/admin.cpp
+                 src/panel/auth.cpp src/auth.cpp src/util.cpp src/crypto.cpp)
+  target_include_directories(panel_test PRIVATE src third_party)
+  target_link_libraries(panel_test PRIVATE Threads::Threads)
+  if(WIN32)
+    target_link_libraries(panel_test PRIVATE ws2_32 bcrypt)
+    target_compile_definitions(panel_test PRIVATE
+      _WIN32_WINNT=0x0A00 WINVER=0x0A00 NTDDI_VERSION=0x0A000000)
+  endif()
+  add_test(NAME panel COMMAND panel_test)
+
   if(NOT MSVC)
-    foreach(t crypto_test json_test ops_test)
+    foreach(t crypto_test json_test ops_test panel_test)
       target_compile_options(${t} PRIVATE -Wall -Wextra -Wno-unused-parameter)
     endforeach()
   endif()

@@ -7,6 +7,17 @@
 namespace util {
 
 std::string trim(const std::string &s);
+
+// 解析十进制整数（pid、端口、行数这类）。
+//
+// 为什么不用 std::strtol：glibc 2.38 起它被 __REDIRECT 到 __isoc23_strtol，
+// 而新版 libstdc++ 会强制走那条路。结果是在 glibc 2.41 上编出来的二进制
+// 拿到 Debian 12（2.36）上直接报 "GLIBC_2.38 not found"，整个程序起不来。
+// 自己解析没有这个耦合，而且这几处调用点本来就只需要十进制。
+//
+// 失败返回 false 并把 out 置 0；成功时 out 是结果，end 指向第一个未消费字符
+// （不需要时传 nullptr）。允许前导空白与正负号，与 strtol 一致。
+bool parse_long(const char *s, long &out, const char **end = nullptr);
 std::string to_lower(std::string s);
 bool starts_with(const std::string &s, const std::string &p);
 bool ends_with(const std::string &s, const std::string &p);

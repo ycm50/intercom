@@ -30,6 +30,7 @@ Linux 下同理（去掉编译器那两个参数）。
 | `crypto` | 内置 SHA-256 / HMAC-SHA256 / PBKDF2 与 OpenSSL 逐字节一致；长密码（>64 字节）走的分支也对 |
 | `json` | JSON 数组/对象往返，ICE 配置的读入格式 |
 | `ops` | `--cur`/`--res` 依赖的进程名识别（`cochat`/`cochat.exe`/发布名算，`cochatx`/`cloudflared` 不算）、进程存活判定、自述目录位置 |
+| `panel` | 面板保留名规则：`admin`/`ADMIN`/` admin ` 都算保留名，`administrator`/`admin2` 不算。这条规则错了就是"运维把自己锁在门外" |
 
 > 为什么测试默认不编：默认构建必须零第三方依赖。测试拿 OpenSSL 当对照实现，
 > 所以只有 `-DCOCHAT_BUILD_TESTS=ON` 时才引入它。
@@ -207,3 +208,74 @@ Stop-Process $p1.Id,$p2.Id -Force
 
 覆盖：`--help` 文案、`--cur` 的实例/隧道状态/数据目录过滤、`--res` 的原命令行重放与地址回显、
 `--passwd` 的改密/核对/长度校验、退出时与死进程的自述清理。
+
+---
+
+## 11. 管理面板（/admin）
+
+```powershell
+$exe = ".\build\cochat.exe"
+$env:USERPROFILE = "$env:TEMP\ic-panel"
+$acct = "$env:USERPROFILE\acct"
+Remove-Item -Recurse -Force $env:USERPROFILE -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $env:USERPROFILE | Out-Null
+
+# 1) 首次启动自动建 admin，密码打印一次
+Start-Process $exe -ArgumentList '--port','8191','--accounts',$acct,'--data',$env:USERPROFILE `
+  -RedirectStandardOutput "$env:USERPROFILE\srv.log" -RedirectStandardError "$env:USERPROFILE\srv.err"
+Start-Sleep 3
+$pw = (Select-String -Path "$env:USERPROFILE\srv.log" -Pattern '密码 (\S+)').Matches[0].Groups[1].Value
+
+# 2) 未登录时受保护接口一律 401（users / instances / logs 三个都要查）
+$base = 'http://127.0.0.1:8191'
+foreach ($u in '/admin/api/users','/admin/api/instances','/admin/api/logs') {
+  try { Invoke-RestMethod "$base$u" -TimeoutSec 5 } catch { [int]$_.Exception.Response.StatusCode }  # 期望 401
+}
+
+# 3) 登录，拿 csrf
+$r = Invoke-WebRequest "$base/admin/api/login" -Method POST -ContentType 'application/json' `
+  -Body (@{user='admin';pass=$pw} | ConvertTo-Json) -SessionVariable sess -UseBasicParsing
+$csrf = ($r.Content | ConvertFrom-Json).csrf
+
+# 4) 写接口无 CSRF / 错 CSRF 都应 401，正确才 200
+$add = @{user='alice';password='alice123'} | ConvertTo-Json
+try { Invoke-RestMethod "$base/admin/api/users/add" -Method POST -ContentType 'application/json' -Body $add -WebSession $sess } catch { [int]$_.Exception.Response.StatusCode }
+Invoke-RestMethod "$base/admin/api/users/add" -Method POST -ContentType 'application/json' -Body $add `
+  -WebSession $sess -Headers @{'X-CSRF-Token'=$csrf}   # 期望 ok:true
+
+# 5) admin 不可增删改名（改密码必须允许）
+try { Invoke-RestMethod "$base/admin/api/users/del" -Method POST -ContentType 'application/json' `
+  -Body (@{user='admin'} | ConvertTo-Json) -WebSession $sess -Headers @{'X-CSRF-Token'=$csrf} } catch { [int]$_.Exception.Response.StatusCode }  # 400
+try { Invoke-RestMethod "$base/admin/api/users/rename" -Method POST -ContentType 'application/json' `
+  -Body (@{from='admin';to='root'} | ConvertTo-Json) -WebSession $sess -Headers @{'X-CSRF-Token'=$csrf} } catch { [int]$_.Exception.Response.StatusCode }  # 400
+Invoke-RestMethod "$base/admin/api/users/passwd" -Method POST -ContentType 'application/json' `
+  -Body (@{user='admin';password='newpass456'} | ConvertTo-Json) -WebSession $sess -Headers @{'X-CSRF-Token'=$csrf}
+
+# 6) 命令行也必须拦（面板能拦、命令行不拦等于没拦）
+& $exe --del admin --accounts $acct        # 返回 1，文案含「不能删除」
+& $exe --un admin root --accounts $acct    # 返回 1，文案含「不能改名」
+& $exe --add ADMIN x --accounts $acct      # 返回 1，保留名大小写不敏感
+& $exe --passwd admin newpass456 --accounts $acct   # 允许，返回 0
+
+# 7) 面板"重启"是自重启：先起新进程再退旧进程，且先回响应
+$inst = Invoke-RestMethod "$base/admin/api/instances" -WebSession $sess
+Invoke-RestMethod "$base/admin/api/restart" -Method POST -ContentType 'application/json' `
+  -Body (@{pid="$($inst.list[0].pid)"} | ConvertTo-Json) -WebSession $sess -Headers @{'X-CSRF-Token'=$csrf}
+# 期望立刻回 {"ok":true,"message":"已发出重启..."}，不是连接被重置
+Start-Sleep 8
+Invoke-RestMethod "$base/api/info"          # 期望 200，pid 已变
+
+# 8) 审计留痕
+Invoke-RestMethod "$base/admin/api/logs" -WebSession $sess   # 含「面板 登录成功」「新建账号」「重启实例」
+
+# 9) 页面与内嵌资源
+Invoke-WebRequest "$base/admin" -UseBasicParsing                 # 200，含登录表单
+Invoke-WebRequest "$base/admin/assets/panel.css" -UseBasicParsing # 200, text/css
+Invoke-WebRequest "$base/admin/assets/panel.js"  -UseBasicParsing # 200, text/javascript
+```
+
+覆盖：admin 自动创建与密码只打印一次、未登录 401、CSRF 缺失/错误被拒、admin 不可增删改名（面板与命令行两侧）、
+改密可用、面板自重启的响应顺序、审计日志、内嵌资源与 CSP 头。
+
+> 第 7 项是本项最容易回归的地方：`src/restart.cpp` 里"先 spawn 再 terminate"的顺序一旦被改回去，
+> 点重启就会把服务弄没，而且从日志上看不出任何异常。

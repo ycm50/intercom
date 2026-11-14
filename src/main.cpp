@@ -27,6 +27,7 @@
 #include "passwd.h"
 #include "protocol.h"
 #include "restart.h"
+#include "tunnel/loader.h"
 #include "util.h"
 
 // 由 CMake 生成：把 public/index.html 以字节数组形式嵌进可执行文件，
@@ -62,7 +63,10 @@ struct Config {
   // 端口占用时可临时换端口，--cur/--res 都靠自述文件看到真实值。
   std::string tunnel_mode = "auto";
   std::string tunnel_url;         // --tunnel-url <公网地址>
-  std::string tunnel_source;      // 实际生效的来源：cli / external / 空
+  std::string tunnel_source;      // 实际生效的来源：plugin / cli / 空
+  // 内建隧道插件：--tunnel 打开（不装插件也能跑，只是没有隧道）
+  bool tunnel_enable = false;
+  std::string tunnel_token;       // 命名隧道的连接令牌；空 = quick 隧道
 };
 
 Config g_cfg;
@@ -919,6 +923,8 @@ static void print_usage() {
       "                       供 --cur 显示、供手机端检查；地址只是「现在对外是什么」，\n"
       "                       不改变服务本身的监听\n"
       "  --no-tunnel          明确声明没有隧道（--cur 会显示「隧道已关闭」）\n"
+      "  --tunnel             启用内建隧道插件（编了插件才可用；缺插件时只是没有隧道）\n"
+      "  --tunnel-token <令牌> 命名隧道的连接令牌；给了它自动启用隧道，留空则用 quick 隧道\n"
       "\n"
       "查看与运维:\n"
       "  --cur                列出本机正在运行的实例及其公网地址\n"
@@ -1141,6 +1147,16 @@ int main(int argc, char **argv) {
       g_cfg.tunnel_mode = "off";
       g_cfg.tunnel_url.clear();
       g_cfg.tunnel_source.clear();
+      g_cfg.tunnel_enable = false;
+    } else if (a == "--tunnel") {
+      // 打开内建隧道插件。插件不存在时不是错误：主程序照常跑，只是没有隧道。
+      g_cfg.tunnel_enable = true;
+      if (g_cfg.tunnel_mode == "off") g_cfg.tunnel_mode = "auto";
+    } else if (a == "--tunnel-token" && i + 1 < nargs) {
+      // 命名隧道的连接令牌；给了它就自动打开隧道，省得写两个参数。
+      g_cfg.tunnel_token = args[++i];
+      g_cfg.tunnel_enable = true;
+      if (g_cfg.tunnel_mode == "off") g_cfg.tunnel_mode = "auto";
     }
   }
   if (g_cfg.loopback_only) {
@@ -1210,11 +1226,63 @@ int main(int argc, char **argv) {
   }
   std::printf("  存储策略  聊天内容、语音、视频全部只在内存中转发，不写入磁盘\n\n");
 
-  const bool bound = server.listen(g_cfg.bind_host.c_str(), g_cfg.port);
-  app::remove_instance_record();
-  if (!bound) {
+  // 先 bind 再起隧道，最后才 accept：隧道要连的 origin 就是本进程这个端口，
+  // 端口还没绑上就去转发，头几个请求必然 502。bind_to_port + listen_after_bind
+  // 正好把"端口已被占用"和"开始接请求"拆成两步。
+  if (!server.bind_to_port(g_cfg.bind_host.c_str(), g_cfg.port)) {
+    app::remove_instance_record();
     std::fprintf(stderr, "错误: 无法监听 %s:%d（端口被占用？用 cochat --cur 看有没有实例在跑）\n",
                  g_cfg.bind_host.c_str(), g_cfg.port);
+    return 2;
+  }
+
+  // ---- 内建隧道插件 --------------------------------------------------------
+  // 加载失败一律不是错误：可能没编插件（缺 OpenSSL）、可能被安全软件拦下、
+  // 可能版本不符。这三种都只表达成"没有隧道"，服务照样提供局域网访问。
+  tunnel::Loader tunnel_loader;
+  if (g_cfg.tunnel_enable && g_cfg.tunnel_mode != "off") {
+    std::string load_err;
+    if (!tunnel_loader.load(load_err)) {
+      std::printf("  内建隧道  未启用（%s）\n", tunnel_loader.reason().c_str());
+    } else {
+      // 排障开关：COCHAT_TUNNEL_LOG=3 打开 debug 级进度（平时只打 error/warn，
+      // 否则一条健康隧道会把服务端输出刷满）。
+      const char *tlog = std::getenv("COCHAT_TUNNEL_LOG");
+      const int tunnel_lvl = tlog != nullptr ? std::atoi(tlog) : 1;
+      tunnel_loader.call_set_log_level(tunnel_lvl);
+      tunnel_loader.set_callbacks(
+          [tunnel_lvl](int lvl, const std::string &line) {
+            if (lvl <= tunnel_lvl) std::fprintf(stderr, "[tunnel] %s\n", line.c_str());
+          },
+          [](const tunnel::Status &st) {
+            // 边缘给出域名后同步进 /api/info，--cur 就能看到公网地址。
+            if (!st.hostname.empty()) {
+              g_cfg.tunnel_url = "https://" + st.hostname;
+              g_cfg.tunnel_source = "plugin";
+            }
+          });
+
+      tunnel::Options opts;
+      opts.token = g_cfg.tunnel_token;
+      opts.originPort = static_cast<std::uint16_t>(g_cfg.port);
+      opts.dataDir = g_cfg.data_dir;
+      std::string err;
+      if (tunnel_loader.start(opts, err) != 0) {
+        std::printf("  内建隧道  启动失败（%s）\n", err.c_str());
+      } else {
+        std::printf("  内建隧道  已启动（%s），公网地址注册完成后用 --cur 查看\n",
+                    g_cfg.tunnel_token.empty() ? "quick 隧道" : "命名隧道");
+      }
+    }
+  }
+
+  const bool listened = server.listen_after_bind();
+  // listen 返回意味着服务该退出了：这时才撤掉自述文件（启动期间它正是
+  // --cur 能看见本进程的依据，早删就等于自己没有实例记录）。
+  app::remove_instance_record();
+  tunnel_loader.stop();
+  if (!listened) {
+    std::fprintf(stderr, "错误: 监听失败（%s:%d）\n", g_cfg.bind_host.c_str(), g_cfg.port);
     return 2;
   }
   return 0;

@@ -1,4 +1,4 @@
-﻿# cochat 安装脚本（Windows / PowerShell）
+# cochat 安装脚本（Windows / PowerShell）
 #
 #   用法：
 #     .\install.ps1 <二进制文件>
@@ -182,6 +182,23 @@ try {
   if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
   Write-Host ("错误：安装失败（" + $_.Exception.Message + "）。若 cochat 正在运行，请先退出。") -ForegroundColor Red
   exit 1
+}
+
+# 内建隧道插件：loader 先看 exe 同目录，所以必须和主程序装在一起。
+# 它不由参数传入（"如果二进制旁边躺着就一起装"）—— 安装脚本的接口不必为
+# 可选组件多开参数，缺了插件也只是没有隧道，主程序照常可用。
+$pluginNames = @("cochat-tunnel.dll")
+$srcDir = Split-Path -Parent $Item.FullName
+foreach ($plug in $pluginNames) {
+  $src = Join-Path $srcDir $plug
+  if (-not (Test-Path -LiteralPath $src)) { continue }
+  $dst = Join-Path $Prefix $plug
+  try {
+    Copy-Item -LiteralPath $src -Destination $dst -Force
+    Write-Host ("==> 隧道插件已安装到 " + $dst) -ForegroundColor Green
+  } catch {
+    Write-Host ("警告：隧道插件复制失败（" + $_.Exception.Message + "），内建隧道将不可用") -ForegroundColor Yellow
+  }
 }
 
 Write-Host ("==> 已安装到 " + $target) -ForegroundColor Green

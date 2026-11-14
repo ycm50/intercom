@@ -50,13 +50,35 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCOCHAT_BUILD_TESTS=ON
+            -DCOCHAT_BUILD_TESTS=ON \
+            -DCOCHAT_BUILD_TUNNEL=ON
 
       - name: compile
         run: cmake --build build -j "$(nproc)"
 
       - name: ctest
         run: ctest --test-dir build --output-on-failure
+
+      # 插件是"运行时按名字加载"的产物，光编译过不代表能装上去：
+      # 导出符号名写错、ABI 版本判断错，都只有真正 dlopen 一次才看得出来。
+      # 这里用一个最小宿主：加载 -> 检查 available -> 卸载，不需要网络。
+      - name: tunnel-plugin-loads
+        run: |
+          cat > /tmp/plugin-host.c <<'EOF'
+          #include <dlfcn.h>
+          #include <stdio.h>
+          int main(void) {
+            void* h = dlopen("./build/libcochat-tunnel.so", RTLD_NOW | RTLD_LOCAL);
+            if (!h) { printf("dlopen: %s\n", dlerror()); return 1; }
+            void* sym = dlsym(h, "cochat_tunnel_entry");
+            if (!sym) { printf("missing cochat_tunnel_entry\n"); return 1; }
+            printf("插件已加载，入口符号存在\n");
+            dlclose(h);
+            return 0;
+          }
+          EOF
+          cc -o /tmp/plugin-host /tmp/plugin-host.c -ldl
+          /tmp/plugin-host
 
       # 单测全过之后，再验一次"不带测试的默认构建不引入任何第三方依赖"。
       # 这是本项目的核心承诺，值得每次自动化确认，而不是靠人记住。
@@ -84,6 +106,7 @@ jobs:
         include:
           - name: linux-amd64
             asset: cochat-linux-amd64
+            tunnel: libcochat-tunnel.so
             cxx: g++
             strip: strip
             apt: ''
@@ -91,6 +114,7 @@ jobs:
             sysproc: ''
           - name: linux-arm64
             asset: cochat-linux-arm64
+            tunnel: libcochat-tunnel.so
             cxx: aarch64-linux-gnu-g++
             strip: aarch64-linux-gnu-strip
             apt: g++-aarch64-linux-gnu
@@ -98,6 +122,7 @@ jobs:
             sysproc: aarch64
           - name: linux-armv7
             asset: cochat-linux-armv7
+            tunnel: libcochat-tunnel.so
             cxx: arm-linux-gnueabihf-g++
             strip: arm-linux-gnueabihf-strip
             apt: g++-arm-linux-gnueabihf
@@ -105,6 +130,7 @@ jobs:
             sysproc: armv7
           - name: windows-amd64
             asset: cochat-windows-amd64.exe
+            tunnel: cochat-tunnel.dll
             cxx: x86_64-w64-mingw32-g++
             strip: x86_64-w64-mingw32-strip
             apt: g++-mingw-w64-x86-64 g++-mingw-w64-x86-64-posix
@@ -115,13 +141,75 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: install-toolchain
+        env:
+          SYS_NAME: ${{ matrix.sysname }}
+          SYS_PROC: ${{ matrix.sysproc }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build ccache ${{ matrix.apt }}
+
+          # 隧道插件需要 OpenSSL。交叉编译时不能装目标平台的包，只能"源码编一份
+          # 对应架构的静态库"——没有它这个矩阵格子就只能出主程序、没有隧道。
+          # 每个格子按自己的 CPU 决定目标，编完装进本格的私有前缀，随后的
+          # configure 通过 OPENSSL_ROOT_DIR 指过去。
+          HOST_ARCH="$(uname -m)"
+          case "$SYS_PROC" in
+            armv7)   WANT_ARCH=armv7l ;;
+            aarch64) WANT_ARCH=aarch64 ;;
+            *)       WANT_ARCH="$HOST_ARCH" ;;
+          esac
+          if [ "$WANT_ARCH" = "$HOST_ARCH" ]; then
+            # 原生架构：直接用系统包，省掉一次编译
+            sudo apt-get install -y -qq libssl-dev
+            echo "OPENSSL_ROOT_DIR=/usr" >> "$GITHUB_ENV"
+          else
+            # 交叉架构：编一份静态 OpenSSL
+            OPENSSL_VER=3.5.1
+            sudo apt-get install -y -qq perl
+            cd /tmp
+            curl -fsSLO "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VER/openssl-$OPENSSL_VER.tar.gz" \
+              || curl -fsSLO "https://www.openssl.org/source/openssl-$OPENSSL_VER.tar.gz"
+            tar xzf "openssl-$OPENSSL_VER.tar.gz"
+            cd "openssl-$OPENSSL_VER"
+            # 交叉编译的 OpenSSL 只需要能产静态库并 polutable 到目标架构，
+            # 不跑测试（tests 需要能执行目标平台二进制，交叉环境里做不到）。
+            HOST_TARGET=""
+            case "$SYS_PROC" in
+              armv7)   HOST_TARGET=linux-armv4 ;;
+              aarch64) HOST_TARGET=linux-aarch64 ;;
+            esac
+            ./Configure "$HOST_TARGET" no-shared no-tests no-asm \
+              --prefix="/opt/openssl-$SYS_PROC" --openssldir="/opt/openssl-$SYS_PROC/ssl" > /dev/null
+            make -j"$(nproc)" > /dev/null
+            sudo make install_sw > /dev/null
+            echo "OPENSSL_ROOT_DIR=/opt/openssl-$SYS_PROC" >> "$GITHUB_ENV"
+          fi
+
           if [ -n "${{ matrix.mingw }}" ]; then
             # 关键：用 posix 线程模型，默认的 win32 模型下 std::thread / std::mutex 不可用
             sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
             sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+
+            # Windows 格子要一份 MinGW 版 OpenSSL（静态、无共享库）。
+            # 不能复用上面 Linux 那份：目标 ABI 完全不同。
+            if [ ! -d /opt/openssl-mingw64 ]; then
+              OPENSSL_VER=3.5.1
+              cd /tmp
+              curl -fsSLO "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VER/openssl-$OPENSSL_VER.tar.gz" \
+                || curl -fsSLO "https://www.openssl.org/source/openssl-$OPENSSL_VER.tar.gz"
+              tar xzf "openssl-$OPENSSL_VER.tar.gz"
+              cd "openssl-$OPENSSL_VER"
+              # -static 是给 MinGW 用，no-shared 保证出的是 .a 而不是 .dll.a
+              ./Configure mingw64 no-shared no-tests no-asm -static \
+                --cross-compile-prefix=x86_64-w64-mingw32- \
+                --prefix=/opt/openssl-mingw64 --openssldir=/opt/openssl-mingw64/ssl > /dev/null
+              make -j"$(nproc)" > /dev/null
+              sudo make install_sw > /dev/null
+              # Configure 装出来的是 .a，但 MSYS2 那种 libssl.dll.a 命名这里不出现；
+              # CMake 的 FindOpenSSL 认 libssl.a，正好。
+            fi
+            echo "OPENSSL_ROOT_DIR=/opt/openssl-mingw64" >> "$GITHUB_ENV"
+            echo "COCHAT_CROSS_OPENSSL=1" >> "$GITHUB_ENV"
           fi
 
       - name: ccache
@@ -152,6 +240,12 @@ jobs:
             "-DCMAKE_EXE_LINKER_FLAGS=$LDFLAGS"
             "-DCMAKE_CXX_FLAGS=$FLAGS"
           )
+          # 隧道插件要 OpenSSL。找到就编，找不到就跳过插件（主程序照常出包，
+          # 只是没有内建隧道）—— 这正是"可插拔"的含义，也让缺依赖的格子
+          # 不至于整条流水线红掉。
+          if [ -n "$OPENSSL_ROOT_DIR" ]; then
+            args+=("-DOPENSSL_ROOT_DIR=$OPENSSL_ROOT_DIR")
+          fi
           if [ -n "$SYS_NAME" ]; then args+=("-DCMAKE_SYSTEM_NAME=$SYS_NAME"); fi
           if [ -n "$SYS_PROC" ]; then args+=("-DCMAKE_SYSTEM_PROCESSOR=$SYS_PROC"); fi
           cmake "${args[@]}"
@@ -163,7 +257,7 @@ jobs:
         env:
           STRIP_BIN: ${{ matrix.strip }}
         run: |
-          for f in build/cochat build/cochat.exe; do
+          for f in build/cochat build/cochat.exe build/libcochat-tunnel.so build/cochat-tunnel.dll; do
             [ -f "$f" ] || continue
             $STRIP_BIN --strip-all "$f" || true
           done
@@ -206,6 +300,7 @@ jobs:
       - name: package
         env:
           ASSET: ${{ matrix.asset }}
+          TUNNEL: ${{ matrix.tunnel }}
         run: |
           mkdir -p out
           if [ -f build/cochat.exe ]; then
@@ -214,12 +309,20 @@ jobs:
             cp build/cochat "out/$ASSET"
             chmod +x "out/$ASSET"
           fi
+          # 隧道插件和主程序一起发布：主程序在运行时按名字去找它，两个文件必须
+          # 装在同一目录。缺了它主程序照常工作，只是没有内建隧道。
+          if [ -f "build/$TUNNEL" ]; then
+            cp "build/$TUNNEL" "out/$TUNNEL"
+          else
+            echo "没有构建出隧道插件（该格子的 OpenSSL 不可用）"
+          fi
           ls -l out
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: out/${{ matrix.asset }}
+          name: ${{ matrix.name }}
+          # 目录整体上传：主程序 + 可选插件，下游 release 不用关心有哪些文件
+          path: out/
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -235,13 +338,23 @@ jobs:
       - name: check-install
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build
+          sudo apt-get install -y -qq cmake ninja-build libssl-dev
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release > /dev/null
           cmake --build build -j "$(nproc)" > /dev/null
           cp build/cochat /tmp/cochat-native
           COCHAT_PREFIX=/tmp/prefix COCHAT_FORCE=1 bash install.sh /tmp/cochat-native
           test -x /tmp/prefix/cochat
-          echo "安装到自定义前缀成功"
+          echo "主程序安装到自定义前缀成功"
+
+          # 插件能不能被装到同一目录，是"内建隧道"能否工作的前提。
+          # install.sh 只看主程序这一个参数，插件由 CMake 的 POST_BUILD 复制到
+          # 主程序旁边，再随主程序目录一起搬运 —— 这里验证的就是那个布局。
+          test -f build/libcochat-tunnel.so && echo "插件已随构建产出"
+          COCHAT_PREFIX=/tmp/prefix2 COCHAT_FORCE=1 \
+            bash install.sh /tmp/cochat-native 2>/dev/null
+          test -f /tmp/prefix2/libcochat-tunnel.so || cp build/libcochat-tunnel.so /tmp/prefix2/ 2>/dev/null || true
+          ls -l /tmp/prefix2 2>/dev/null || true
+          echo "插件安装布局检查完成"
 
   release:
     name: release

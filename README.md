@@ -11,7 +11,7 @@
 ## 架构
 
 ```
-手机 Chrome ──https──> cloudflared ──http(127.0.0.1)──> cochat
+手机 Chrome ──https──> Cloudflare 边缘 <──隧道插件──> cochat
    │                                                          │
    └────────── WebRTC 音视频（点对点，不过服务器）──────────┘
 ```
@@ -92,6 +92,35 @@ bash build-linux.sh dist      # 输出 dist/cochat-linux-amd64 等静态二进�
 
 产出的静态二进制可直接拷到任意 amd64/arm64 Linux 上运行，目标机不需要编译器、不需要任何运行库。
 本机装了什么交叉工具链就出哪些架构，没装的会打印"跳过"而不是失败。
+
+### 内建隧道插件（可插拔，需要 OpenSSL）
+
+隧道不再是外部 `cloudflared.exe` 子进程，而是编译成一个**动态库**，主程序运行时按名字加载：
+
+| 平台 | 插件文件 | 主程序 |
+| --- | --- | --- |
+| Windows | `cochat-tunnel.dll` | `cochat.exe` |
+| Linux | `libcochat-tunnel.so` | `cochat` |
+
+为什么拆成动态库而不是编进主程序：
+
+1. **隧道要 OpenSSL，而主程序的核心承诺是零第三方依赖。** 拆出去以后，不装 OpenSSL 的人照样能用完整功能，只是没有隧道；`cmake` 找不到 OpenSSL 时会自动跳过插件目标，主程序照常构建。
+2. **"插件缺失"必须是一个运行期状态。** 可能没编出来、可能被杀毒软件拦下、可能版本不符 —— 编译期内建表达不了这几种情况，运行时加载可以，而且失败只表达成"没有隧道"，`/api/info` 会写明原因。
+
+插件实现的是 Cloudflare Tunnel 协议本身（capnp RPC 控制流 + 自写 HTTP/2 服务端 + TLS + 请求转发），不依赖任何外部可执行文件。运行：
+
+```powershell
+cochat --tunnel                     # quick 隧道，自动申请 *.trycloudflare.com
+cochat --tunnel-token <连接令牌>     # 命名隧道（Cloudflare 控制台里那个 base64 串）
+```
+
+插件放在主程序同目录（`cmake --build` 会自动复制过去）。加载顺序：
+
+1. `exe` 同目录
+2. `exe` 同目录下的 `plugins/`
+3. 环境变量 `COCHAT_TUNNEL_LIB` 指定的完整路径
+
+排障：`COCHAT_TUNNEL_LOG=3` 打开隧道全部日志（默认只打 error/warn，健康隧道不输出任何东西）。
 
 ### 单元测试（可选，需要 OpenSSL）
 
@@ -273,7 +302,15 @@ systemctl status intercom
 
 命令行注册的账号会被运行中的服务自动识别（按文件修改时间热加载），无需重启。
 
-分开跑：
+带内建隧道（推荐，不再需要 cloudflared）：
+
+```powershell
+.\build\cochat.exe --port 8080 --tunnel
+```
+
+注册完成后 `cochat --cur` 会显示公网地址（来源标记为 `[plugin]`）。
+
+仍然可以用外部 cloudflared（对照排障时有用）：
 
 ```powershell
 .\build\cochat.exe --port 8080
@@ -345,7 +382,9 @@ pid      端口 公网地址                                 状态
 | `--allow-lan` | 允许局域网直连（默认关闭；外部来源仍会被 403） |
 | `--data <目录>` | 数据目录，默认 exe 同级 `data`（只放账号与可选 ice.json） |
 | `--public <目录>` | 前端目录，默认 exe 同级 `public` |
-| `--tunnel-url <地址>` | 记录对外公网地址，`--cur` 与前端登录页会显示它 |
+| `--tunnel` | 启用内建隧道插件（quick 隧道；未编插件时只是没有隧道，不影响服务） |
+| `--tunnel-token <令牌>` | 命名隧道的连接令牌；给了它自动启用隧道 |
+| `--tunnel-url <地址>` | 记录对外公网地址（外部 cloudflared 场景用），`--cur` 与前端登录页会显示它 |
 | `--no-tunnel` | 明确声明没有隧道（`--cur` 显示「隧道已关闭」） |
 | `--force` | 配合 `--passwd`：接受过短的密码（默认拒绝） |
 | `--cur` | 列出正在运行的实例及公网地址 |
@@ -382,6 +421,8 @@ pid      端口 公网地址                                 状态
 | `src/restart.h/.cpp` | `--res`：systemd 走 unit 重启，手工启动的按原命令行重放 |
 | `src/passwd.h/.cpp` | `--passwd`：改密 / `--check` 双端核对 |
 | `public/index.html` | 手机端单页前端（HTML + JS） |
+| `plugins/tunnel/` | 内建隧道插件（capnp / HTTP/2 / TLS / 请求转发），独立动态库 |
+| `src/tunnel/` | 插件 ABI 头与主程序侧加载器（不含 OpenSSL，加载失败只降级） |
 | `tests/` | 单元测试（`-DCOCHAT_BUILD_TESTS=ON` 时才编译） |
 | `docs/运维手册.md` | `--cur` / `--res` / `--passwd` 的日常用法与排障顺序 |
 

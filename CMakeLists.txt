@@ -23,6 +23,7 @@ add_executable(cochat
   src/instances.cpp
   src/restart.cpp
   src/passwd.cpp
+  src/tunnel/loader.cpp
 )
 
 target_include_directories(cochat PRIVATE src third_party "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -78,6 +79,94 @@ file(WRITE "${GEN_DIR}/embedded_public.h"
 
 # 前端改动后重新生成
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PUBLIC_INDEX}")
+
+
+# ---------------------------------------------------------------------------
+# 内建隧道插件（可插拔动态库）
+#
+# 为什么是动态库而不是编进主程序：
+#   1) 隧道需要 OpenSSL，而主程序的核心承诺是"零第三方依赖"。把它拆出去，
+#      不装 OpenSSL 的人照样能用完整功能，只是没有隧道。
+#   2) 插件缺失/损坏/版本不符时，主程序要能优雅降级成一个纯局域网服务。
+#      编译期内建做不到"运行时缺失"这个状态。
+#
+# 因此在没有 OpenSSL 的环境下，这个目标会被整体跳过，cochat 照常构建。
+# ---------------------------------------------------------------------------
+option(COCHAT_BUILD_TUNNEL "构建内建隧道插件（需要 OpenSSL 开发库）" ON)
+
+if(COCHAT_BUILD_TUNNEL)
+  find_package(OpenSSL QUIET)
+  if(NOT OpenSSL_FOUND)
+    message(STATUS "未找到 OpenSSL，跳过隧道插件（主程序不受影响）")
+    set(COCHAT_BUILD_TUNNEL OFF)
+  endif()
+endif()
+
+if(COCHAT_BUILD_TUNNEL)
+  set(TUNNEL_SOURCES
+    plugins/tunnel/netportable.cpp
+    plugins/tunnel/capnp.cpp
+    plugins/tunnel/tunnelrpc.cpp
+    plugins/tunnel/h2.cpp
+    plugins/tunnel/proxy.cpp
+    plugins/tunnel/quick.cpp
+    plugins/tunnel/ingress.cpp
+    plugins/tunnel/client.cpp
+    plugins/tunnel/plugin.cpp
+  )
+
+  # MODULE 而不是 SHARED：MODULE 库不产生导入库、不参与别的目标链接，
+  # 它天生就是"运行时按路径加载"的产物，语义正好对应我们的用法。
+  add_library(cochat_tunnel MODULE ${TUNNEL_SOURCES})
+
+  target_include_directories(cochat_tunnel PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/plugins/tunnel
+  )
+
+  target_link_libraries(cochat_tunnel PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+
+  # 只导出入口符号，其余全部隐藏。少了这个，插件的内部辅助符号会出现在
+  # 动态符号表里，和主程序的静态链接符号撞车的概率不为零。
+  # 产物名按平台惯例：Windows 是 cochat-tunnel.dll，Linux 是 libcochat-tunnel.so。
+  # 用惯例而不是统一成无前缀，是为了让 ldd / readelf / 普通的 .so 查找习惯都能
+  # 直接认出来；loader 两个名字都会试。
+  if(WIN32)
+    set(TUNNEL_PREFIX "")
+  else()
+    set(TUNNEL_PREFIX "lib")
+  endif()
+  set_target_properties(cochat_tunnel PROPERTIES
+    PREFIX "${TUNNEL_PREFIX}"
+    OUTPUT_NAME "cochat-tunnel"
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+  )
+
+  if(WIN32)
+    target_link_libraries(cochat_tunnel PRIVATE ws2_32 crypt32)
+    target_compile_definitions(cochat_tunnel PRIVATE
+      _WIN32_WINNT=0x0A00 WINVER=0x0A00 NTDDI_VERSION=0x0A000000)
+    target_link_options(cochat_tunnel PRIVATE -static-libgcc -static-libstdc++)
+    # Windows 的 MODULE 库默认产出 .dll，无需改后缀
+  else()
+    target_link_libraries(cochat_tunnel PRIVATE Threads::Threads)
+  endif()
+
+  if(NOT MSVC)
+    target_compile_options(cochat_tunnel PRIVATE -Wall -Wextra -Wno-unused-parameter)
+  else()
+    target_compile_options(cochat_tunnel PRIVATE /W3 /utf-8)
+  endif()
+
+  # 构建完把插件放到主程序旁边，开发时直接就能被 loader 发现。
+  add_custom_command(TARGET cochat_tunnel POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+      $<TARGET_FILE:cochat_tunnel>
+      $<TARGET_FILE_DIR:cochat>
+    COMMENT "隧道插件已复制到输出目录"
+  )
+endif()
 
 # ---------------------------------------------------------------------------
 # 单元测试（默认关闭）

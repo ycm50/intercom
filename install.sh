@@ -221,6 +221,19 @@ if [ ! -x "$PREFIX/$BIN_NAME" ]; then
   exit 1
 fi
 
+# 内建隧道插件：和主程序**同一个目录**里才找得到（loader 先看 exe 同目录）。
+# 它不由参数传入，而是"如果二进制旁边躺着就一起装"—— 这样安装脚本的接口
+# 不用为可选组件多开一个参数，缺了插件也只是没有隧道，主程序照常可用。
+SRC_DIR="$(cd "$(dirname "$SRC")" && pwd)"
+for plug in libcochat-tunnel.so cochat-tunnel.dll; do
+  if [ -f "$SRC_DIR/$plug" ]; then
+    cp "$SRC_DIR/$plug" "$PREFIX/$plug" || {
+      echo "警告：隧道插件 $plug 复制失败，内建隧道将不可用" >&2
+    }
+    echo "==> 隧道插件已安装到 $PREFIX/$plug"
+  fi
+done
+
 echo ""
 echo "==> 已安装到 $PREFIX/$BIN_NAME"
 

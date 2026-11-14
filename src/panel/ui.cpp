@@ -62,6 +62,7 @@ const std::string& panel_html() {
     <button class="tab active" data-tab="overview" type="button">运行概况</button>
     <button class="tab" data-tab="instances" type="button">实例</button>
     <button class="tab" data-tab="users" type="button">账号</button>
+    <button class="tab" data-tab="turn" type="button">中继</button>
     <button class="tab" data-tab="logs" type="button">日志</button>
   </nav>
 
@@ -112,6 +113,25 @@ const std::string& panel_html() {
             </thead>
             <tbody id="users-body"></tbody>
           </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-turn" class="tab-panel hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2>中继（TURN）</h2>
+          <button class="btn ghost small" data-refresh="turn" type="button">刷新</button>
+        </div>
+        <p class="muted small note">
+          两台手机各自在不同网络时，NAT 会让点对点直连失败，只有中继能通。
+          这里填 Cloudflare Realtime 应用的 Key ID 与 API Token。
+          <strong>Token 是长期密钥，保存后不再回显</strong>；留空表示沿用原值。
+        </p>
+        <dl class="kv" id="kv-turn"></dl>
+        <div class="row-actions">
+          <button class="btn" id="turn-save" type="button">设置 / 修改</button>
+          <button class="btn ghost" id="turn-clear" type="button">清除（回到仅 STUN）</button>
         </div>
       </div>
     </section>
@@ -509,6 +529,7 @@ function switchTab(name) {
   if (name === 'overview') loadStatus(false);
   else if (name === 'instances') loadInstances(false);
   else if (name === 'users') loadUsers(false);
+  else if (name === 'turn') loadTurn();
   else if (name === 'logs') loadLogs(false);
 }
 function startTimer() {
@@ -837,6 +858,70 @@ function lineText(x) {
   }
   return String(x);
 }
+/* ---------------- 中继（TURN） ---------------- */
+
+function loadTurn() {
+  return api('/admin/api/turn').then(function (d) {
+    var kv = clear($('kv-turn'));
+    var configured = d.configured === true;
+    var working = d.working === true;
+    addKV(kv, '状态', configured ? (working ? '已生效（下发给浏览器）' : '已配置，但换取凭证失败') : '未配置（只用 STUN）');
+    addKV(kv, 'Key ID', d.key_id_masked ? String(d.key_id_masked) : '—', true);
+    addKV(kv, 'API Token', d.api_token_set ? '已设置（不回显）' : '未设置');
+    addKV(kv, '凭证有效期', (d.ttl || 0) + ' 秒');
+    if (d.fetch_error) addKV(kv, '失败原因', String(d.fetch_error));
+    if (d.error) addKV(kv, '配置错误', String(d.error));
+    STATE.turn = d;   // 弹窗要用它显示"当前掩码 / 是否已设置"
+    return d;
+  }).catch(function (e) { toast(failMsg(e), 'bad'); });
+}
+
+function saveTurn() {
+  var cur = STATE.turn || {};
+  openDialog({
+    title: '中继配置（Cloudflare TURN）',
+    okText: '保存并验证',
+    // 保存后会**当场换一次凭证**：填错了 Key ID 必须立刻能看出来，
+    // 否则运维会以为配好了，实际跨网络依然打不通。
+    note: 'Token 只写不回显。留空表示沿用当前值。保存后会自动验证一次凭证能否换取成功。',
+    fields: [
+      { name: 'key_id', label: 'Key ID', value: '', placeholder: cur.key_id_masked ? ('当前 ' + cur.key_id_masked + '（留空沿用）') : '例如 ab12cd34...' },
+      { name: 'api_token', label: 'API Token', type: 'password', autocomplete: 'new-password', placeholder: cur.api_token_set ? '已设置（留空沿用）' : '粘贴 API Token' },
+      { name: 'ttl', label: '凭证有效期（秒，600-86400）', value: String(cur.ttl || 86400) }
+    ],
+    onSubmit: function (v) {
+      var ttl = parseInt(v.ttl, 10) || 86400;
+      if (ttl < 600 || ttl > 86400) return '有效期要在 600 到 86400 秒之间';
+      return api('/admin/api/turn', { method: 'POST',
+          body: { key_id: (v.key_id || '').trim(), api_token: (v.api_token || '').trim(), ttl: ttl } })
+        .then(function (d) { if (!d.ok) throw new Error(d.error || '保存失败'); return d; })
+        .then(function (d) {
+          // 服务端把"存进去了但换不到凭证"也当作成功返回（配置文件确实写了），
+          // 所以这里要自己看 message 里有没有"失败"，否则会给出错误的成功提示。
+          if (/失败/.test(d.message || '')) throw new Error(d.message);
+          return null;
+        })
+        .catch(function (e) { return failMsg(e); });
+    },
+    after: function () { toast('中继配置已保存', 'good'); loadTurn(); }
+  });
+}
+
+function clearTurn() {
+  openDialog({
+    title: '清除中继配置',
+    okText: '清除',
+    danger: true,
+    note: '清除后只会下发 STUN。同一局域网仍可通话，跨网络大概率打不通。',
+    onSubmit: function () {
+      return api('/admin/api/turn', { method: 'DELETE' })
+        .then(function (d) { if (!d.ok) throw new Error(d.error || '清除失败'); return null; })
+        .catch(function (e) { return failMsg(e); });
+    },
+    after: function () { toast('已清除，回到仅 STUN', 'good'); loadTurn(); }
+  });
+}
+
 function loadLogs(quiet) {
   var sel = $('log-lines');
   var n = sel && sel.value ? sel.value : '200';
@@ -958,10 +1043,15 @@ function bindEvents() {
     if (what === 'overview') loadStatus(false);
     else if (what === 'instances') loadInstances(false);
     else if (what === 'users') loadUsers(false);
+    else if (what === 'turn') loadTurn();
     else if (what === 'logs') loadLogs(false);
   });
   var add = $('btn-user-add');
   if (add) add.addEventListener('click', addUser);
+  var turnSave = $('turn-save');
+  if (turnSave) turnSave.addEventListener('click', saveTurn);
+  var turnClear = $('turn-clear');
+  if (turnClear) turnClear.addEventListener('click', clearTurn);
   var lines = $('log-lines');
   if (lines) lines.addEventListener('change', function () { loadLogs(false); });
   var cancel = $('dlg-cancel');

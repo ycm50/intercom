@@ -29,6 +29,7 @@ inline constexpr const char *kUserRename = "/admin/api/users/rename";
 inline constexpr const char *kUserPasswd = "/admin/api/users/passwd";
 inline constexpr const char *kLogs = "/admin/api/logs";
 inline constexpr const char *kRestart = "/admin/api/restart";
+inline constexpr const char *kTurn = "/admin/api/turn";
 
 // 统一响应形状：成功 {"ok":true,...}，失败 {"ok":false,"error":"人话原因"}。
 // 两个助手集中在一处，是为了避免每个路由自己拼字段 —— 把 "ok" 写成 "success"

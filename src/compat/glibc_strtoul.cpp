@@ -25,11 +25,25 @@
 extern "C" {
 
 // glibc 的内部入口，签名与 strtoul/strtoull 一致（多一个 group 参数）。
+extern long __strtol_internal(const char*, char**, int, int);
 extern unsigned long __strtoul_internal(const char*, char**, int, int);
+extern long long __strtoll_internal(const char*, char**, int, int);
 extern unsigned long long __strtoull_internal(const char*, char**, int, int);
+
+// 四个都要给。只补其中一部分时，剩下那个会在别的依赖库换版本后突然冒出来
+// —— 这正是这次的经过：先只补了 strtoul/strtoull（当时 grep 没看到 strtol 的
+// 引用），后来静态链接 OpenSSL，它内部引用了 __isoc23_strtol，产物立刻又
+// 变回 "GLIBC_2.38 not found"。
+long __isoc23_strtol(const char* n, char** e, int b) {
+    return __strtol_internal(n, e, b, 0);
+}
 
 unsigned long __isoc23_strtoul(const char* n, char** e, int b) {
     return __strtoul_internal(n, e, b, 0);
+}
+
+long long __isoc23_strtoll(const char* n, char** e, int b) {
+    return __strtoll_internal(n, e, b, 0);
 }
 
 unsigned long long __isoc23_strtoull(const char* n, char** e, int b) {

@@ -635,6 +635,55 @@ void handle_restart(const Context &ctx, const httplib::Request &req, httplib::Re
   }).detach();
 }
 
+/* ------------------------------ TURN 配置 ------------------------------ */
+
+void handle_turn_get(const Context &ctx, httplib::Response &res) {
+  if (!ctx.host.turn_status_json) {
+    reply_error(res, 503, "面板动作未接线：TURN 状态");
+    return;
+  }
+  Json out = Json::object();
+  Json parsed;
+  if (Json::parse(ctx.host.turn_status_json(), parsed) && parsed.is_object()) {
+    out = parsed;
+  }
+  reply_ok(res, out);
+}
+
+void handle_turn_save(const Context &ctx, const httplib::Request &req, httplib::Response &res) {
+  if (!ctx.host.turn_save) {
+    reply_error(res, 503, "面板动作未接线：TURN 保存");
+    return;
+  }
+  Json body;
+  if (!parse_body(req, body)) {
+    reply_error(res, 400, "请求体不是 JSON 对象");
+    return;
+  }
+  // 空串表示"这一项保持原样"，所以两种空都要区分：字段缺失 = 不改，
+  // 字段存在且非空 = 改。前端只会填用户真正输入的框。
+  const std::string key_id = jsonx::str(body, "key_id");
+  const std::string api_token = jsonx::str(body, "api_token");
+  int ttl = static_cast<int>(jsonx::num(body, "ttl", 86400));
+
+  const auto ret = ctx.host.turn_save(key_id, api_token, ttl);
+  if (ctx.host.log) {
+    // 只记"改过"，绝不记值。
+    ctx.host.log(std::string("面板 更新 TURN 配置 ") + (ret.first ? "成功" : "失败"));
+  }
+  report_action(res, ret);
+}
+
+void handle_turn_clear(const Context &ctx, httplib::Response &res) {
+  if (!ctx.host.turn_clear) {
+    reply_error(res, 503, "面板动作未接线：TURN 清除");
+    return;
+  }
+  const auto ret = ctx.host.turn_clear();
+  if (ctx.host.log) ctx.host.log(std::string("面板 清除 TURN 配置 ") + (ret.first ? "成功" : "失败"));
+  report_action(res, ret);
+}
+
 /* -------------------------------- 注册 -------------------------------- */
 
 }  // namespace
@@ -734,6 +783,22 @@ bool register_routes(void *srv_as_httplib_server, const Host &host, const std::s
   srv->Post(routes::kRestart, [ctx](const httplib::Request &req, httplib::Response &res) {
     if (!require_auth(ctx->data_dir, req, res)) return;
     handle_restart(*ctx, req, res);
+  });
+
+  // TURN：GET 只读状态（掩码），POST 保存，DELETE 清除。
+  // 「清除」单独一个动词而不是 POST 一个空值：空值在保存语义里表示"不改这一项"，
+  // 用它来删除会让"想删掉"变成"什么也没发生"。
+  srv->Get(routes::kTurn, [ctx](const httplib::Request &req, httplib::Response &res) {
+    if (!require_auth(ctx->data_dir, req, res)) return;
+    handle_turn_get(*ctx, res);
+  });
+  srv->Post(routes::kTurn, [ctx](const httplib::Request &req, httplib::Response &res) {
+    if (!require_auth(ctx->data_dir, req, res)) return;
+    handle_turn_save(*ctx, req, res);
+  });
+  srv->Delete(routes::kTurn, [ctx](const httplib::Request &req, httplib::Response &res) {
+    if (!require_auth(ctx->data_dir, req, res)) return;
+    handle_turn_clear(*ctx, res);
   });
 
   return true;

@@ -580,6 +580,15 @@ document.documentElement.setAttribute("data-theme",m);}catch(e){document.documen
             name: 'voice.' + (type.indexOf('mp4') >= 0 ? 'm4a' : 'webm'), data: b64
           });
           if (!ok) { notify('连接已断开'); return; }
+          // 服务端只把 media 转给对方，不会回给自己的连接，所以发送方必须
+          // 自己在本地补一条气泡 —— 否则录完只看到一行「语音已发送」，
+          // 想确认自己到底发了什么、声音对不对都无从下手。
+          addMediaBubble({
+            from: S.user, display: '我', kind: 'voice',
+            mime: type.split(';')[0], size: blob.size,
+            name: 'voice.' + (type.indexOf('mp4') >= 0 ? 'm4a' : 'webm'),
+            data: b64, ts: Date.now() / 1000
+          });
           sysNote('语音已发送');
         });
       };
@@ -626,8 +635,13 @@ document.documentElement.setAttribute("data-theme",m);}catch(e){document.documen
         t: 'media', to: S.peer, kind: 'video', mime: f.type || 'video/mp4',
         size: f.size, name: f.name, duration: 0, data: b64
       });
-      if (!ok) notify('连接已断开');
-      else sysNote('视频片段已发送');
+      if (!ok) { notify('连接已断开'); return; }
+      // 同语音：发送方本地补一条，否则自己发的东西在会话里看不见。
+      addMediaBubble({
+        from: S.user, display: '我', kind: 'video', mime: f.type || 'video/mp4',
+        size: f.size, name: f.name, data: b64, ts: Date.now() / 1000
+      });
+      sysNote('视频片段已发送');
     });
   });
 
@@ -1000,7 +1014,14 @@ document.documentElement.setAttribute("data-theme",m);}catch(e){document.documen
             });
           });
         }
-      }).catch(function () {});
+      }).catch(function (e) {
+        // 【不能再静默】这里原先是个空 catch，协商一失败就什么都不留：
+        // 界面显示"通话中"、对方也显示"通话中"，但两边永远听不到声音，
+        // 而且日志里一个字都没有 —— 这正是"纯语音不通"最难查的地方。
+        // 现在把原因打出来，至少能分清是 SDP 协商错还是别的问题。
+        console.error('[rtc] setRemoteDescription/answer 失败', e);
+        sysNote('协商失败：' + (e && e.message ? e.message : e));
+      });
       void ready;
     } else if (data.candidate) {
       if (!pc.remoteDescription || !pc.remoteDescription.type) {
@@ -1211,41 +1232,74 @@ document.documentElement.setAttribute("data-theme",m);}catch(e){document.documen
     if (!ctx) return;
     if (ctx.state === 'suspended') {
       ctx.resume().then(function () {
-        if (AE.ctx && AE.ctx.state === 'running') $('btn-unlock').classList.add('hidden');
+        // 解锁成功 = WebAudio 开始出声了，这时要把 <audio> 静音掉，
+        // 否则同一路流会被播两遍（听起来像回声/音量翻倍）。
+        if (AE.ctx && AE.ctx.state === 'running') syncAudioOutput();
+        else $('btn-unlock').classList.add('hidden');
       }).catch(function () {});
     } else if (ctx.state === 'running') {
-      $('btn-unlock').classList.add('hidden');
+      syncAudioOutput();
     }
   }
 
+  // 远端声音有两条路，**必须同时挂上**：
+  //   1) <audio> 元素直出：不依赖 AudioContext 是否被自动播放策略挂起，
+  //      任何情况下都有声。这是保底的那一条。
+  //   2) WebAudio：用来做电平表（排障面板）与音量控制。
+  //
+  // 为什么不能只走 WebAudio：AudioContext 在手机 Chrome 上经常一创建就是
+  // "suspended"，resume() 需要用户手势；而通话建立往往发生在用户点「接听」
+  // 之后的一串异步回调里，手势上下文早就丢了。结果就是——两条轨都 live、
+  // 连接状态 connected、计时器在走，但**一点声音都没有**。
+  // 纯语音通话尤其明显（视频还能看到画面，音频是纯黑的），
+  // 这正是「通话建立了却听不见」的成因。
+  //
+  // 两条同时挂的代价：声音会叠一份。所以 <audio> 只在 WebAudio 确实
+  // 没在跑的时候才取消静音，见下面 syncAudioOutput()。
   function playRemoteAudio(stream) {
-    var ctx = ensureAudioContext();
+    if (!stream || !stream.getAudioTracks().length) return;
     var el = $('remote-audio');
-    if (!ctx) {
-      if (el && stream) {
+    if (el) {
+      if (el.srcObject !== stream) {
         el.srcObject = stream;
-        el.muted = false;
-        var p0 = el.play();
-        if (p0 && p0.catch) p0.catch(function () {});
+        el.autoplay = true;
+        el.setAttribute('playsinline', '');
       }
-      return;
+      var pr = el.play();
+      if (pr && pr.catch) pr.catch(function () {});
     }
+    var ctx = ensureAudioContext();
+    if (!ctx) { if (el) el.muted = false; return; }
     try {
-      if (!stream || !stream.getAudioTracks().length) return;
-      if (AE.source && AE.stream === stream) return;  // 同一个流不重复接
+      if (AE.source && AE.stream === stream) { syncAudioOutput(); return; }
       if (AE.source) { try { AE.source.disconnect(); } catch (e) {} AE.source = null; }
       AE.stream = stream;
       AE.source = ctx.createMediaStreamSource(stream);
       AE.source.connect(AE.gain);
     } catch (e) {
-      if (el && stream) {
-        el.srcObject = stream;
-        el.muted = false;
-        var p1 = el.play();
-        if (p1 && p1.catch) p1.catch(function () {});
-      }
+      // createMediaStreamSource 失败（老 WebView 等）：<audio> 已经在放了，
+      // 不要因此把声音关掉。
+      if (el) el.muted = false;
+      return;
     }
-    if (ctx.state !== 'running') $('btn-unlock').classList.remove('hidden');
+    syncAudioOutput();
+  }
+
+  // 决定这一帧到底由谁出声，避免两条路同时响导致回声/声音加倍。
+  function syncAudioOutput() {
+    var el = $('remote-audio');
+    if (!el) return;
+    var ctx = AE.ctx;
+    var webAudioLive = !!(ctx && ctx.state === 'running' && AE.source);
+    // WebAudio 在跑 => 关掉 <audio> 的声音（它在放同一路流，两份会重叠）。
+    // 否则必须让 <audio> 出声，否则整通电话是静音的。
+    el.muted = webAudioLive;
+    if (!webAudioLive) {
+      var p = el.play();
+      if (p && p.catch) p.catch(function () {});
+    }
+    if (webAudioLive) $('btn-unlock').classList.add('hidden');
+    else $('btn-unlock').classList.remove('hidden');
   }
 
   function remoteAudioLevel() {
@@ -1345,8 +1399,19 @@ document.documentElement.setAttribute("data-theme",m);}catch(e){document.documen
   }
 
   // 黑屏看门狗：有流但 videoWidth 一直是 0，就重新挂一次流强制解码
+  // 音频看门狗：WebAudio 被系统挂起（切后台、来电打断、省电策略）后，
+  // <audio> 如果也被静音，整通电话就哑了而且用户完全不知道原因。
+  // 每轮检查一次，谁在跑就让谁出声。
+  function audioWatchdog() {
+    if (!S.inCall) return;
+    var el = $('remote-audio');
+    if (!el || !el.srcObject) return;
+    syncAudioOutput();
+  }
+
   function videoWatchdog() {
     if (!S.inCall) return;
+    audioWatchdog();
     var lv = $('local-video');
     var rv = $('remote-video');
     if (S.callMedia === 'video' && S.localStream && lv.srcObject) {
@@ -1482,6 +1547,17 @@ document.documentElement.setAttribute("data-theme",m);}catch(e){document.documen
     S.pendingCandidates = [];
     S.pendingSignals = [];
     $('remote-video').srcObject = null;
+    // 【必须一起清】原先只清了 video，远端音频的 <audio> 与 WebAudio 的 source
+    // 都还挂着上一条已关闭的连接。结果第二通电话里 playRemoteAudio() 会看到
+    // "AE.stream 还是旧流" 而直接 return（它的判重是按流对象身份比的），
+    // 新流永远接不上 —— 现场表现就是「通话建立成功、但听不到对方」。
+    // 第一通正常、从第二通开始哑掉，正是这个顺序问题。
+    var ra = $('remote-audio');
+    if (ra) ra.srcObject = null;
+    if (AE.source) { try { AE.source.disconnect(); } catch (e) {} AE.source = null; }
+    AE.stream = null;
+    S.remoteStream = null;
+    S.remoteTracks = {};
   }
 
   // 掉线的一方重连上来了：由它重新发起 offer

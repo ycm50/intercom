@@ -30,6 +30,7 @@
 #include "panel/panel.h"
 #include "restart.h"
 #include "tunnel/loader.h"
+#include "turn.h"
 #include "util.h"
 
 // 由 CMake 生成：把 public/index.html 以字节数组形式嵌进可执行文件，
@@ -680,6 +681,37 @@ jsonx::Json ice_config() {
 
   list.push_back({{"urls", "stun:stun.cloudflare.com:3478"}});
   list.push_back({{"urls", "stun:stun.l.google.com:19302"}});
+
+  // TURN：两台手机在不同网络（尤其都是移动流量）时，对称 NAT 会让直连彻底失败，
+  // 只有中继能救。凭证必须由服务端换取 —— API Token 是长期密钥，不能下发浏览器。
+  //
+  // 取不到就只发 STUN：局域网和多数家庭宽带仍然能直连，比让整通电话失败好。
+  // 这里**故意**不在失败时缓存（只看 stamp），因为网络抖动是暂时的，
+  // 下次请求应该重试；凭证本身在 turn.cpp 里有 5 分钟余量的缓存。
+  {
+    turn::Config tcfg;
+    std::string terr;
+    if (turn::load_config(g_cfg.data_dir, tcfg, terr)) {
+      std::vector<turn::IceServer> servers;
+      std::string ferr;
+      if (turn::fetch_credentials(tcfg, servers, ferr)) {
+        for (const auto& s : servers) {
+          jsonx::Json o;
+          jsonx::Json urls = jsonx::Json::array();
+          for (const auto& u : s.urls) urls.push_back(jsonx::Json(u));
+          o["urls"] = urls;
+          o["username"] = s.username;
+          o["credential"] = s.credential;
+          list.push_back(o);
+        }
+      } else {
+        log_line("TURN 凭证获取失败，本次只下发 STUN：" + ferr);
+      }
+    } else if (!terr.empty()) {
+      log_line("TURN 配置读取失败：" + terr);
+    }
+  }
+
   result["iceServers"] = list;
   cached = result;
   cached_stamp = stamp;
@@ -1334,6 +1366,48 @@ int main(int argc, char **argv) {
       j["signals"] = static_cast<long long>(g_signal_count.load());
       return jsonx::dump(j);
     };
+    // ---- TURN：面板能否看/改凭证 -------------------------------------------
+    // 只回显掩码，不回显值。API Token 是长期密钥，进了浏览器就等于泄露。
+    host.turn_status_json = []() { return turn::status_json(g_cfg.data_dir); };
+    host.turn_save = [](const std::string &key_id, const std::string &api_token, int ttl) {
+      std::string err;
+      if (!turn::save_config(g_cfg.data_dir, key_id, api_token, ttl, err)) {
+        return std::make_pair(false, err.empty() ? std::string("保存失败") : err);
+      }
+      // 【不要在请求线程里同步验证】
+      //
+      // 这里原先会当场去 Cloudflare 换一次凭证，好让"填错了"立刻可见。
+      // 代价是：这个 HTTP 请求要被困住好几秒。面板是经隧道访问的，而
+      // Cloudflare 边缘对源站的等待很短，超时就返回 530 —— 用户看到
+      // "请求失败（HTTP 530）"，压根不知道配置其实**已经写进去了**。
+      //
+      // 现在改成：先落盘（快），再在后台线程里验证。
+      // 保存结果立刻返回，验证结果通过 /admin/api/turn 的 status 反映出来
+      // （面板会显示"已配置，但换取凭证失败"加原因）。
+      std::string cfg_err;
+      turn::Config cfg;
+      if (!turn::load_config(g_cfg.data_dir, cfg, cfg_err)) {
+        return std::make_pair(false, std::string("已写入，但读不回来：") + cfg_err);
+      }
+      std::thread([cfg]() {
+        std::vector<turn::IceServer> servers;
+        std::string ferr;
+        if (!turn::fetch_credentials(cfg, servers, ferr)) {
+          log_line("TURN 凭证验证失败：" + ferr);
+        } else {
+          log_line("TURN 凭证验证成功，TURN 已生效");
+        }
+      }).detach();
+      return std::make_pair(true, std::string("已保存，正在后台验证凭证（几秒后刷新查看结果）"));
+    };
+    host.turn_clear = []() {
+      std::string err;
+      if (!turn::clear_config(g_cfg.data_dir, err)) {
+        return std::make_pair(false, err.empty() ? std::string("清除失败") : err);
+      }
+      return std::make_pair(true, std::string("已清除，回到只用 STUN"));
+    };
+
     host.tunnel_json = []() {
       jsonx::Json t;
       // 插件在位时以它为准：它知道"此刻"连没连上、域名是什么。

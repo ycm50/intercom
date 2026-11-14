@@ -479,6 +479,44 @@ pid      端口 公网地址                                 状态
 | `--passwd ...` | 见上文「命令行管理账号」 |
 | `--help` / `-h` | 显示完整帮助 |
 
+## 内建 TURN（跨网络通话，静态编译进二进制）
+
+WebRTC 默认只靠 STUN 打洞。**两台手机各自在移动网络后面时打不通**——运营商
+NAT 多为对称型，STUN 拿到的地址根本连不上，媒体永远建不起来。这时只能让
+服务器中转，即 TURN。
+
+本项目内建 Cloudflare Realtime TURN，**不依赖 coturn，也不需要本机承担带宽**：
+
+```json
+// <数据目录>/turn.json
+{
+  "key_id": "从 Cloudflare 控制台 Realtime 应用拿到的 TURN Key ID",
+  "api_token": "对应的 API Token",
+  "ttl": 86400
+}
+```
+
+也可以用环境变量 `CLOUDFLARE_TURN_KEY_ID` / `CLOUDFLARE_TURN_API_TOKEN`。
+
+**为什么用 Cloudflare 而不是自建 coturn**：TURN 要求客户端直连服务器的 UDP
+端口。本项目跑在国内机器上，持续的大流量 UDP 很容易被中间设备限速或阻断，
+一旦被断连隧道一起废掉。Cloudflare 的 TURN 走的是和隧道同一套边缘网络，
+国内手机能连，也不占用你的出口带宽。
+
+**怎么工作**：服务端用 Key ID + API Token 换一份有时效的 STUN/TURN 凭证，
+随 `/api/info` 下发给浏览器。长期 API Token 绝不下发（那等于公开）。
+凭证在过期前 5 分钟自动换新。
+
+**取不到就降级**：没配 TURN、网络不通、凭证错误，都只是退回"只用 STUN"，
+服务与通话的其他部分照常工作。失败原因会写进服务端日志，例如：
+
+```
+[2026-11-14 20:03:29] TURN 凭证获取失败，本次只下发 STUN：Cloudflare 返回 404：{"error":"cannot find specified key"}
+```
+
+OpenSSL 是**静态链接**进主程序的：产物仍然"拷过去就能跑"，不需要目标机装
+`libssl.so.3`。代价是二进制大 7MB 左右。
+
 ## 可选：自定义 ICE（NAT 穿透更稳）
 
 `data/ice.json`：

@@ -46,6 +46,19 @@ struct Host {
     std::function<std::pair<bool, std::string>(const std::string& pid)> restart_instance;
     // 隧道状态（只读）与"重新申请 quick 隧道"这类运维动作
     std::function<std::string()> tunnel_json;
+
+    // ---- TURN 凭证 ---------------------------------------------------------
+    // 面板要能看和改 turn.json。**只回显 key_id 是否已设置、api_token 是否已设置**，
+    // 绝不回显它们的值：API Token 是长期密钥，一旦进了浏览器缓存/截图就等于泄露。
+    // 读取走 getter 而不是让路由直接读文件：配置在 <data_dir> 下，
+    // 面板不该自己拼路径。
+    std::function<std::string()> turn_status_json;
+    // 返回 (成功?, 给人看的结果)。空字符串表示"这一项不改"，用于只更新其中一项。
+    std::function<std::pair<bool, std::string>(const std::string& key_id,
+                                               const std::string& api_token,
+                                               int ttl)> turn_save;
+    // 清空配置（回到只用 STUN 的状态）。
+    std::function<std::pair<bool, std::string>()> turn_clear;
     // 审计日志落点。面板的登录成败与账号增删改都要进服务端日志，
     // 否则"谁在什么时候删了谁"在事后完全无从追溯 —— 这是管理面板最该有、
     // 也最容易漏掉的一件事。宿主不接线时面板照常工作，只是不留痕。

@@ -24,6 +24,7 @@ add_executable(cochat
   src/restart.cpp
   src/passwd.cpp
   src/tunnel/loader.cpp
+  src/turn.cpp
   src/panel/admin.cpp
   src/panel/auth.cpp
   src/panel/routes.cpp
@@ -65,6 +66,100 @@ if(MSVC)
   target_compile_options(cochat PRIVATE /W3 /utf-8)
 else()
   target_compile_options(cochat PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
+
+# ---------------------------------------------------------------------------
+# 内建 TURN：主程序要自己用 HTTPS 去 Cloudflare 换临时凭证，因此需要 TLS。
+#
+# 这里是**静态**链接 OpenSSL（不是插件那种动态依赖）：主程序仍然要保持
+# "拷过去就能跑"，不能因为目标机少了 libssl.so.3 就起不来。静态链接后
+# 二进制会大 3~4MB，这是换"到处能跑"应付的代价。
+#
+# 找不到 OpenSSL 时不给 INTERCOM_WITH_OPENSSL，turn.cpp 会退化成一
+# "没有 TURN，只发 STUN"的构建 —— 其余功能一切照旧。
+# ---------------------------------------------------------------------------
+find_package(OpenSSL QUIET)
+if(OPENSSL_FOUND)
+  target_compile_definitions(cochat PRIVATE INTERCOM_WITH_OPENSSL)
+  # cpp-httplib 默认把 https 编成"不支持"，必须显式打开这个宏，
+  # 否则 Client("https://...") 会在运行期抛 "'https' scheme is not supported"。
+  # 这个宏同时要求包含 OpenSSL 头，链接的库必须已经就位（下面就是）。
+  target_compile_definitions(cochat PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+  # OpenSSL::SSL / OpenSSL::Crypto 在 Windows 上指向 .dll.a（导入库），
+  # 直接链会变成动态依赖。这里显式偏好静态库文件名。
+  # find_library 默认会跳过 .a（.dll.a 也是"静态"后缀命中的干扰项），
+  # 所以这里直接按文件名到 OpenSSL 的头文件目录旁边去算，绝不靠名字猜。
+  # IMPORTED_LOCATION 就是 MSYS2/Linux 里 libcrypto.dll.a 的路径。
+  # Debian/Ubuntu 是 multiarch 布局：头文件在 /usr/include，静态库却可能在
+  # /usr/lib/x86_64-linux-gnu —— 光拼 ../lib 会算成 /usr/lib 而找不到 .a，
+  # 于是悄悄退回动态链接（产物多出 libssl.so.3 依赖，正是要避免的）。
+  # 这里把几个候选都试一遍。
+  set(_ssl_a "")
+  foreach(_cand
+      "${OPENSSL_INCLUDE_DIR}/../lib/libssl.a"
+      "/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/libssl.a"
+      "/usr/lib/x86_64-linux-gnu/libssl.a"
+      "/usr/lib/aarch64-linux-gnu/libssl.a"
+      "/usr/lib/arm-linux-gnueabihf/libssl.a")
+    get_filename_component(_abs "${_cand}" ABSOLUTE)
+    if(EXISTS "${_abs}" AND _ssl_a STREQUAL "")
+      get_filename_component(_ssl_dir "${_abs}" DIRECTORY)
+      set(_ssl_a "${_abs}")
+    endif()
+  endforeach()
+  if(_ssl_a STREQUAL "")
+    set(_ssl_dir "")
+    set(_crypto_a "")
+  else()
+    set(_crypto_a "${_ssl_dir}/libcrypto.a")
+  endif()
+  # 静态 libssl.a 依赖 zlib（TLS 的压缩/解压路径），动态链接时由 libssl.so
+  # 自己声明 NEEDED 带进来，静态时得我们补。
+  set(_z_a "")
+  if(NOT _ssl_dir STREQUAL "")
+    foreach(_zc "${_ssl_dir}/libz.a" "${_ssl_dir}/../lib/libz.a")
+      get_filename_component(_zabs "${_zc}" ABSOLUTE)
+      if(EXISTS "${_zabs}" AND _z_a STREQUAL "")
+        set(_z_a "${_zabs}")
+      endif()
+    endforeach()
+  endif()
+  if(EXISTS "${_ssl_a}" AND EXISTS "${_crypto_a}")
+    target_link_libraries(cochat PRIVATE "${_ssl_a}" "${_crypto_a}")
+    if(NOT _z_a STREQUAL "")
+      target_link_libraries(cochat PRIVATE "${_z_a}")
+    endif()
+    # OpenSSL 3.x 的静态库还要 zstd（TLS 的压缩证书链用）。这一串依赖是靠
+    # `pkg-config --static --libs openssl` 问出来的，不要手猜：少一个就是
+    # 一堆 undefined reference，而且每次 OpenSSL 升级都可能变。
+    if(NOT WIN32)
+      find_library(_ZSTD_A NAMES libzstd.a)
+      if(_ZSTD_A)
+        target_link_libraries(cochat PRIVATE "${_ZSTD_A}")
+      endif()
+    endif()
+    if(WIN32)
+      # 静态 libcrypto.a 自带 socket 相关的对象（bss_conn 等），它们要解析
+      # __imp_WSASetLastError 之类，必须在 libcrypto.a **之后再**列 ws2_32，
+      # 否则链接器按单向顺序扫过去时还没见过 libcrypto 的未定义符号。
+      # target_link_libraries 多次调用是追加，顺序即书写顺序。
+      target_link_libraries(cochat PRIVATE ws2_32 crypt32 advapi32 userenv)
+    else()
+      target_link_libraries(cochat PRIVATE ${CMAKE_DL_LIBS})
+    endif()
+    message(STATUS "内建 TURN：静态链接 ${_ssl_a}")
+  else()
+    target_link_libraries(cochat PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    if(WIN32)
+      target_link_libraries(cochat PRIVATE crypt32)
+    else()
+      target_link_libraries(cochat PRIVATE ${CMAKE_DL_LIBS})
+    endif()
+    message(STATUS "内建 TURN：只有动态 OpenSSL（${_ssl_a} 不存在）")
+  endif()
+  message(STATUS "内建 TURN：已启用（静态链接 OpenSSL）")
+else()
+  message(STATUS "内建 TURN：未启用（找不到 OpenSSL，只发 STUN）")
 endif()
 
 # ---------------------------------------------------------------------------

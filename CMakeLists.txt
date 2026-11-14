@@ -20,6 +20,9 @@ add_executable(cochat
   src/hub.cpp
   src/util.cpp
   src/crypto.cpp
+  src/instances.cpp
+  src/restart.cpp
+  src/passwd.cpp
 )
 
 target_include_directories(cochat PRIVATE src third_party "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -75,3 +78,53 @@ file(WRITE "${GEN_DIR}/embedded_public.h"
 
 # 前端改动后重新生成
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PUBLIC_INDEX}")
+
+# ---------------------------------------------------------------------------
+# 单元测试（默认关闭）
+#
+# 默认关闭是有意的：本项目对外的承诺是"装好编译器就能构建、不依赖第三方库"，
+# 而 tests/crypto_test.cpp 要拿 OpenSSL 当对照实现（证明内置 SHA-256 / HMAC /
+# PBKDF2 与它逐字节一致），一旦默认打开就等于给所有人加了 OpenSSL 依赖。
+# CI 与本地显式传 -DCOCHAT_BUILD_TESTS=ON 再跑 ctest。
+# ---------------------------------------------------------------------------
+option(COCHAT_BUILD_TESTS "构建单元测试（需要 OpenSSL 开发库）" OFF)
+
+if(COCHAT_BUILD_TESTS)
+  enable_testing()
+  find_package(OpenSSL REQUIRED)
+
+  # 与 OpenSSL 逐字节对照：内置密码学实现不能有自己的"差不多对"
+  add_executable(crypto_test tests/crypto_test.cpp src/crypto.cpp)
+  target_include_directories(crypto_test PRIVATE src)
+  target_link_libraries(crypto_test PRIVATE OpenSSL::Crypto)
+  if(WIN32)
+    # crypto.cpp 的安全随机数在 Windows 上走 BCryptGenRandom
+    target_link_libraries(crypto_test PRIVATE bcrypt ws2_32)
+    target_compile_definitions(crypto_test PRIVATE
+      _WIN32_WINNT=0x0A00 WINVER=0x0A00 NTDDI_VERSION=0x0A000000)
+  endif()
+  add_test(NAME crypto COMMAND crypto_test)
+
+  # JSON 往返：ICE 配置就是这么读进来的
+  add_executable(json_test tests/json_test.cpp)
+  target_include_directories(json_test PRIVATE src)
+  add_test(NAME json COMMAND json_test)
+
+  # 实例自述与 --cur/--res 的识别规则（不需要网络，不需要真的起服务）
+  # util.cpp 的随机 token 走 crypto::random_bytes，所以 crypto.cpp 也要带上
+  add_executable(ops_test tests/ops_test.cpp src/instances.cpp src/util.cpp src/crypto.cpp)
+  target_include_directories(ops_test PRIVATE src third_party)
+  target_link_libraries(ops_test PRIVATE Threads::Threads)
+  if(WIN32)
+    target_link_libraries(ops_test PRIVATE ws2_32 bcrypt)
+    target_compile_definitions(ops_test PRIVATE
+      _WIN32_WINNT=0x0A00 WINVER=0x0A00 NTDDI_VERSION=0x0A000000)
+  endif()
+  add_test(NAME ops COMMAND ops_test)
+
+  if(NOT MSVC)
+    foreach(t crypto_test json_test ops_test)
+      target_compile_options(${t} PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    endforeach()
+  endif()
+endif()

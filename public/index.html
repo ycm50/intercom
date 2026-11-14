@@ -175,7 +175,7 @@ document.documentElement.setAttribute("data-theme",m);}catch(e){document.documen
 <!-- 登录 -->
 <div id="screen-login" class="screen">
   <div class="brand">对讲机</div>
-  <div class="slogan">仅通过 cloudflared 隧道访问 · 内容不落盘</div>
+  <div class="slogan" id="slogan">仅通过隧道访问 · 内容不落盘</div>
   <div class="card">
     <div class="field"><label>账号</label>
       <input id="in-user" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="用户名"></div>
@@ -661,6 +661,13 @@ document.documentElement.setAttribute("data-theme",m);}catch(e){document.documen
   // 服务端可通过 data/ice.json 下发 TURN 等配置
   fetch('/api/info').then(function (r) { return r.json(); }).then(function (info) {
     if (info && info.ice && info.ice.iceServers && info.ice.iceServers.length) ICE = info.ice;
+    // 登录页的一句话：隧道地址由服务端告知（--tunnel-url / 内建隧道），
+    // 这里不再写死 cloudflared——隧道怎么来的，前端不需要知道。
+    var slogan = document.getElementById('slogan');
+    if (slogan && info && info.tunnel) {
+      if (info.tunnel.url) slogan.textContent = '公网地址 ' + info.tunnel.url + ' · 内容不落盘';
+      else if (info.tunnel.state) slogan.textContent = info.tunnel.state + ' · 内容不落盘';
+    }
   }).catch(function () {});
 
   function rtcConfig() { return ICE; }

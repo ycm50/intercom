@@ -1,5 +1,6 @@
 // 验证内置 crypto 与 OpenSSL 结果一致（PBKDF2 / SHA256 / HMAC）
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <openssl/evp.h>

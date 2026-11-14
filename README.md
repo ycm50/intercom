@@ -11,7 +11,7 @@
 ## 架构
 
 ```
-手机 Chrome ──https──> cloudflared ──http(127.0.0.1)──> intercom-server
+手机 Chrome ──https──> cloudflared ──http(127.0.0.1)──> cochat
    │                                                          │
    └────────── WebRTC 音视频（点对点，不过服务器）──────────┘
 ```
@@ -87,10 +87,68 @@ $env:UCRT_PATH = 'A:\msys64\ucrt64\bin'   # MSYS2 UCRT64（g++ / cmake / ninja�
 ### Linux（本地 WSL 里交叉/原生构建，**绝不在 VPS 上编译**）
 
 ```bash
-bash build-linux.sh dist      # 输出 dist/intercom-linux-amd64.gz 等静态二进制
+bash build-linux.sh dist      # 输出 dist/cochat-linux-amd64 等静态二进制
 ```
 
 产出的静态二进制可直接拷到任意 amd64/arm64 Linux 上运行，目标机不需要编译器、不需要任何运行库。
+本机装了什么交叉工具链就出哪些架构，没装的会打印"跳过"而不是失败。
+
+### 单元测试（可选，需要 OpenSSL）
+
+默认**不**编译测试，也**不**依赖 OpenSSL——这是刻意的：对外承诺是"装好 C++20 编译器就能构建"。
+只有想跑测试时才显式打开：
+
+```powershell
+# Windows
+$env:UCRT_PATH = 'A:\msys64\ucrt64\bin'
+$env:PATH = "$env:UCRT_PATH;$env:PATH"
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+      -DCMAKE_C_COMPILER="$env:UCRT_PATH\gcc.exe" `
+      -DCMAKE_CXX_COMPILER="$env:UCRT_PATH\g++.exe" `
+      -DCOCHAT_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+```bash
+# Linux
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOCHAT_BUILD_TESTS=ON
+cmake --build build && ctest --test-dir build --output-on-failure
+```
+
+| 测试 | 验什么 |
+| --- | --- |
+| `crypto` | 内置 SHA-256 / HMAC / PBKDF2 与 OpenSSL **逐字节一致**（密码哈希不能有"差不多对"） |
+| `json` | JSON 往返：ICE 配置就是这么读进来的 |
+| `ops` | 进程名识别与实例自述：`--res` 不能误认 pid、不能杀错进程 |
+
+### 持续集成（`.github/workflows/build.yml`）
+
+`push` 到 `main`、提 PR、或手动触发都会跑。顺序是刻意排的：
+
+```
+test ──┬─> build × 4 架构 ──┐
+       └─> install-scripts ─┴─> release（仅手动填了 tag 时）
+```
+
+- **test**：原生构建 + `ctest`；之后再编一份**不带测试**的默认构建，确认它没有引入 OpenSSL（守住零依赖承诺）。
+- **build**：4 个架构交叉编译，每个产物都要过 `file` 校验（类型/架构对不对）和 `ldd` 校验
+  （Linux 必须是 `not a dynamic executable`）。"编出来能跑但架构不对"是最常见的交叉编译事故，发布前挡住。
+- **install-scripts**：用真实产物跑一遍 `install.sh`，确认装到自定义前缀。
+- **release**：只有手动触发并填了 `tag` 才会创建 tag 与 Release，平时只出 artifact。
+
+**发布是可覆盖的。** 同名 tag / release 已存在时，会把它们更新到本次构建的提交，
+而不是像以前那样因为"tag already exists"整个 job 红掉。想重发同一个版本号
+（修完问题、重新打包）直接再点一次、填同样的 tag 即可：
+
+| 情况 | 结果 |
+| --- | --- |
+| tag 不存在 | 新建 tag 与 release |
+| tag 已存在、release 不存在 | tag 被 force 更新到本次提交，再建 release |
+| 两者都已存在 | tag 更新，旧 release 删除后按本次产物重建（旧资产一并清掉） |
+
+> 注意：覆盖 tag 会改写它指向的提交。已经有人按旧 tag 拉过代码时，
+> 他们的本地 tag 不会自动更新，需要 `git fetch --tags --force`。
 
 ## 账号存储策略（`~/.intercom/<userid>.json`）
 
@@ -134,6 +192,9 @@ cochat.exe --add alice
 cochat.exe --passwd alice 654321
 cochat.exe --passwd alice            # 交互输入
 
+# 核对密码：账号文件 + 运行中的服务两头都验（连不上服务不算通过）
+cochat.exe --passwd --check alice 654321
+
 # 改用户名（账号文件随之改名，密码与展示名保持不变）
 cochat.exe --un alice 新名字
 
@@ -141,6 +202,18 @@ cochat.exe --un alice 新名字
 cochat.exe --del alice
 cochat.exe --list        # 每行一个用户名，可直接管道处理
 ```
+
+`--passwd` 的几条规矩：
+
+| 命令 | 作用 |
+| --- | --- |
+| `--passwd` | 只报告账号库位置，不改任何东西 |
+| `--passwd <用户>` | 交互输入新密码（不回显） |
+| `--passwd <用户> <新密码>` | 直接改；密码里的空格、中文都可以 |
+| `--passwd --check <用户> <密码>` | 只核对：文件里对不对 **+** 服务真的收不收 |
+| `--passwd <用户> <过短的密码>` | 拒绝；确认要用就加 `--force` |
+
+改完立即生效：服务按账号文件的修改时间热加载，不需要重启；在线会话需要重新登录。
 
 `--list` 只输出用户名，一行一个：
 
@@ -183,15 +256,18 @@ Windows：
 Linux 服务器（推荐）：
 
 ```bash
-# 本地 WSL 构建后推送
+# 本地 WSL 构建后推送（产物是未压缩的静态二进制，不需要 gzip）
 bash build-linux.sh dist
-scp dist/intercom-linux-amd64.gz root@服务器:/tmp/
-ssh root@服务器 "gunzip -c /tmp/intercom-linux-amd64.gz > /opt/intercom/cochat && chmod +x /opt/intercom/cochat"
+scp dist/cochat-linux-amd64 root@服务器:/tmp/
+ssh root@服务器 "install -m 755 /tmp/cochat-linux-amd64 /opt/intercom/cochat"
 
 # 服务器上安装为 systemd 服务
 bash deploy/deploy.sh /opt/intercom
 systemctl status intercom
 ```
+
+装好之后日常操作都在服务器上用 `cochat --cur` / `cochat --res`，见
+[运维手册](docs/运维手册.md)。
 
 **服务器上不需要安装 g++ / cmake / make 等任何编译工具**，只跑静态二进制。
 
@@ -205,6 +281,12 @@ systemctl status intercom
 ```
 
 把 cloudflared 输出的 `https://xxx.trycloudflare.com` 发给对方，手机 Chrome 打开、输入账号密码即可。
+想让 `--cur` 也看得到这个地址，启动服务时把地址一并告知（隧道重新建立后要重启服务并换新地址）：
+
+```powershell
+.\build\cochat.exe --port 8080 --tunnel-url https://xxx.trycloudflare.com
+cochat.exe --cur                       # 现在能看到它了
+```
 
 | 截图 | 说明 |
 | --- | --- |
@@ -215,6 +297,45 @@ systemctl status intercom
 | ![](docs/06-亮度调节.png) | 夜间主题与亮度调节 |
 | ![](docs/07-日间.png) | 日间主题 |
 
+## 查看 / 重启正在跑的实例（`--cur`、`--res`）
+
+服务每次启动都会在 `~/.intercom/instances/<pid>.json` 写一份自述（端口、数据目录、
+原始命令行、工作目录、启动时间），退出时删掉。`--cur` 与 `--res` 就靠它工作，
+Windows 上没有 `/proc` 也能原样重启。
+
+```powershell
+# 本机所有实例 + 它们此刻的公网地址
+cochat.exe --cur
+
+# 只看某个数据目录的那个实例
+cochat.exe --cur --data .\data
+
+# 知道端口时直接连（老版本二进制没有自述文件时用这个）
+cochat.exe --cur --data .\data --port 8080
+
+# 重启 pid 最小的那个实例；systemd 托管的走 systemctl restart，
+# 手工启动的按原命令行、原工作目录重放
+cochat.exe --res
+cochat.exe --res 12345
+```
+
+`--cur` 的输出长这样（一行一个实例，后面两行是数据目录与命令行）：
+
+```
+pid      端口 公网地址                                 状态
+12345    8080  https://xxx.trycloudflare.com           已连接            [cli]
+         数据目录 D:\intercom\data
+         命令行  D:\intercom\cochat.exe --port 8080 --tunnel-url https://xxx.trycloudflare.com
+```
+
+- 关闭了隧道的实例显示「隧道已关闭」（`--no-tunnel`），配了但没连上显示「隧道未建立」；
+- 进程没有任何自述文件、端口又连不上时，`--cur` 返回 1 并说明原因；
+- `--res` 成功后最多等 20 秒，把新实例真正对外服务的地址打出来；
+  旧地址这一刻已经失效，打印它等于把人引到死链上。
+
+更完整的日常排障场景（发地址、重启、核对密码、发版本、看排障面板）见
+[运维手册](docs/运维手册.md)。
+
 ## 命令行参数
 
 | 参数 | 说明 |
@@ -222,10 +343,15 @@ systemctl status intercom
 | `--port <端口>` | 监听端口，默认 8080 |
 | `--bind <地址>` | 监听地址，默认 127.0.0.1 |
 | `--allow-lan` | 允许局域网直连（默认关闭；外部来源仍会被 403） |
-| `--tls` | 本地自签名 HTTPS（一般不需要，隧道已提供 https） |
 | `--data <目录>` | 数据目录，默认 exe 同级 `data`（只放账号与可选 ice.json） |
-| `--port` 默认 8080 | 对外 https 由 cloudflared 提供，服务本身只跑明文 |
 | `--public <目录>` | 前端目录，默认 exe 同级 `public` |
+| `--tunnel-url <地址>` | 记录对外公网地址，`--cur` 与前端登录页会显示它 |
+| `--no-tunnel` | 明确声明没有隧道（`--cur` 显示「隧道已关闭」） |
+| `--force` | 配合 `--passwd`：接受过短的密码（默认拒绝） |
+| `--cur` | 列出正在运行的实例及公网地址 |
+| `--res [pid]` | 重启实例；不给 pid 时重启 pid 最小的那个 |
+| `--passwd ...` | 见上文「命令行管理账号」 |
+| `--help` / `-h` | 显示完整帮助 |
 
 ## 可选：自定义 ICE（NAT 穿透更稳）
 
@@ -252,13 +378,31 @@ systemctl status intercom
 | `src/auth.h/.cpp` | 账号库与 PBKDF2 校验、失败锁定 |
 | `src/cert.h/.cpp` | 可选的 OpenSSL 自签名证书 |
 | `src/util.*`、`src/json.h` | 编码、时间、文件、JSON 封装 |
+| `src/instances.h/.cpp` | 实例自述（`~/.intercom/instances/<pid>.json`）与 `--cur` |
+| `src/restart.h/.cpp` | `--res`：systemd 走 unit 重启，手工启动的按原命令行重放 |
+| `src/passwd.h/.cpp` | `--passwd`：改密 / `--check` 双端核对 |
 | `public/index.html` | 手机端单页前端（HTML + JS） |
+| `tests/` | 单元测试（`-DCOCHAT_BUILD_TESTS=ON` 时才编译） |
+| `docs/运维手册.md` | `--cur` / `--res` / `--passwd` 的日常用法与排障顺序 |
 
 ## 数据边界
 
 服务器内存中只有：在线用户表、1:1 房间配对、待接来电、登录 token。
 消息体转发后立即释放；账号目录 `~/.intercom/` 里每个账号一个文件，只有用户名、展示名、盐和密码哈希。
 
+进程自述另放在 `~/.intercom/instances/<pid>.json`：端口、数据目录、原始命令行、工作目录、
+启动时间、对外地址。它不含任何账号或密码信息，退出时删除，`--cur` / `--res` 靠它工作。
+
 ## 测试
 
-见 [TESTS.md](TESTS.md)。
+分两层，职责不同，都别混着跑：
+
+| 层 | 命令 | 特点 |
+| --- | --- | --- |
+| 单元测试 | `ctest --test-dir build` | 秒级、无网络、无外部进程；任何时候都可以反复跑 |
+| 端到端测试 | 见 [TESTS.md](TESTS.md) | 真起服务、真开浏览器、真走隧道；耗时长，按需跑 |
+
+单元测试是 `-DCOCHAT_BUILD_TESTS=ON` 时才会编进来的那三个（见上文"单元测试"），
+端到端测试的脚本统一放在仓库外的 `../tmpscripts/`，不随仓库分发。
+
+新增/修改功能时只跑受影响的那一项；改动涉及协议、账号或服务启动流程时再跑全量。

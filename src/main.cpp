@@ -22,8 +22,11 @@
 #include "../third_party/httplib.h"
 #include "auth.h"
 #include "hub.h"
+#include "instances.h"
 #include "json.h"
+#include "passwd.h"
 #include "protocol.h"
+#include "restart.h"
 #include "util.h"
 
 // 由 CMake 生成：把 public/index.html 以字节数组形式嵌进可执行文件，
@@ -55,6 +58,11 @@ struct Config {
   std::string data_dir = "data";
   std::string accounts_dir;  // 空表示 ~/.intercom
   std::string public_dir = "public";
+  // 隧道来源：auto（默认，有 --tunnel-url 就用它）/ off / url
+  // 端口占用时可临时换端口，--cur/--res 都靠自述文件看到真实值。
+  std::string tunnel_mode = "auto";
+  std::string tunnel_url;         // --tunnel-url <公网地址>
+  std::string tunnel_source;      // 实际生效的来源：cli / external / 空
 };
 
 Config g_cfg;
@@ -576,6 +584,26 @@ void handle_info(const httplib::Request &req, httplib::Response &res) {
   j["loopback_only"] = g_cfg.loopback_only;
   j["client_ip"] = client_ip(req);
   j["ice"] = ice_config();
+  // 隧道状态：--cur 与 --res 直接读这里。url 非空 = 此刻真的能对外访问；
+  // configured 为真但 url 为空 = 配了隧道但没连上（别把死链当成可用地址）。
+  {
+    jsonx::Json t;
+    t["url"] = g_cfg.tunnel_url;
+    t["source"] = g_cfg.tunnel_source;
+    t["configured"] = !g_cfg.tunnel_url.empty() || g_cfg.tunnel_mode != "off";
+    t["state"] = g_cfg.tunnel_url.empty()
+                     ? (g_cfg.tunnel_mode == "off" ? "隧道已关闭" : "隧道未建立")
+                     : "已连接";
+    j["tunnel"] = t;
+  }
+  j["pid"] = static_cast<long long>(
+#if defined(_WIN32)
+      ::GetCurrentProcessId()
+#else
+      ::getpid()
+#endif
+  );
+  j["started_at"] = static_cast<long long>(g_started_at.load());
   res.set_content(jsonx::dump(j), "application/json; charset=utf-8");
   res.set_header("Cache-Control", "no-store");
 }
@@ -879,22 +907,33 @@ std::vector<std::string> utf8_args() {
 static void print_usage() {
   std::printf(
       "用法:\n"
-      "  intercom-server.exe [选项]\n\n"
-      "选项:\n"
+      "  cochat [选项]\n\n"
+      "服务:\n"
       "  --port <端口>        监听端口，默认 8080\n"
       "  --bind <地址>        监听地址，默认 127.0.0.1（仅本机）\n"
       "  --allow-lan          允许局域网直连（需要 --bind 0.0.0.0）\n"
-
       "  --data <目录>        数据目录，默认 exe 同级的 data\n"
       "  --accounts <目录>    账号目录，默认 主目录/~/.intercom\n"
       "  --public <目录>      前端目录，默认 exe 同级的 public\n"
-
+      "  --tunnel-url <地址>  记录对外公网地址（https://xxx.trycloudflare.com），\n"
+      "                       供 --cur 显示、供手机端检查；地址只是「现在对外是什么」，\n"
+      "                       不改变服务本身的监听\n"
+      "  --no-tunnel          明确声明没有隧道（--cur 会显示「隧道已关闭」）\n"
+      "\n"
+      "查看与运维:\n"
+      "  --cur                列出本机正在运行的实例及其公网地址\n"
+      "                       加 --data <目录> 只看那一个实例；配 --port 直连指定端口\n"
+      "  --res [pid]          重启一个正在运行的实例；不给 pid 时重启 pid 最小的那个。\n"
+      "                       systemd 托管的走 systemctl restart，手工启动的按原命令行重放\n"
+      "\n"
+      "账号管理:\n"
       "  --add <用户名> [密码] [--display 展示名]   注册账号（省略密码则交互输入）\n"
-      "  --passwd <用户名> [密码]        修改密码（省略密码则交互输入）\n"
+      "  --passwd <用户名> [新密码]      修改密码（省略密码则交互输入）\n"
+      "  --passwd --check <用户名> [密码] 核对密码：账号文件 + 运行中的服务两头都验\n"
       "  --un <旧用户> <新用户>          修改用户名\n"
       "  --del <用户>                    删除账号\n"
       "  --list                          列出账号\n"
-      "  --help                          显示本帮助\n");
+      "  --help, -h                      显示本帮助\n");
 }
 
 // 从标准输入读一行作为密码（不回显控制依赖终端，这里简单读取整行）
@@ -953,16 +992,11 @@ static int run_cli(const std::vector<std::string> &argv) {
         std::fprintf(stderr, "注册失败: %s\n", auth::status_text(st));
         rc = 1;
       }
-    } else if (a == "--passwd" && i + 1 < argc) {
-      std::string user = argv[++i];
-      std::string pass;
-      if (i + 1 < argc) pass = argv[++i]; else pass = read_password_stdin();
-      auth::Status st = store.set_password(user, pass, err);
-      if (st == auth::Status::Ok) std::printf("已修改密码 %s\n", user.c_str());
-      else {
-        std::fprintf(stderr, "修改失败: %s\n", auth::status_text(st));
-        rc = 1;
-      }
+    } else if (a == "--passwd") {
+      // --passwd 已经统一交给 app::run_passwd_cli 处理（见 main 的预扫描），
+      // 这里再出现说明它和别的账号管理参数写在了同一行，明确拒绝而不是猜。
+      std::fprintf(stderr, "error: --passwd 不能和 --add/--del/--un 混用\n");
+      return 2;
     } else if (a == "--un" && i + 2 < argc) {
       std::string oldu = argv[++i];
       std::string newu = argv[++i];
@@ -1016,10 +1050,77 @@ int main(int argc, char **argv) {
     }
   }
 
+  // ---- 运维类参数必须在加载账号库、绑定端口之前处理 ----
+  // 它们要么是来"看"一个已经跑着的实例，要么是来"重启"它；先启动自己再发现
+  // 端口被占，会得到一条看不懂的"无法监听"错误。
+  {
+    bool cur_requested = false;
+    bool res_requested = false;
+    bool passwd_requested = false;
+    bool check_only = false;
+    bool force = false;
+    std::string res_pid;
+    std::string cur_data;
+    std::string accounts_dir;
+    int cur_port = 0;
+    std::vector<std::string> passwd_args;
+
+    for (size_t i = 1; i < nargs; ++i) {
+      const std::string &a = args[i];
+      if (a == "--cur") {
+        cur_requested = true;
+      } else if (a == "--res") {
+        // --res <pid> 重启指定实例；--res 单独出现时重启 pid 最小的那个。
+        // 非数字参数是打错了，不是"没给 pid"——静默回退会重启一个无关实例。
+        res_requested = true;
+        if (i + 1 < nargs && args[i + 1].rfind("--", 0) != 0) {
+          const std::string &v = args[i + 1];
+          bool numeric = !v.empty();
+          for (char c : v) {
+            if (c < '0' || c > '9') {
+              numeric = false;
+              break;
+            }
+          }
+          if (!numeric) {
+            std::fprintf(stderr, "error: --res 需要数字 pid，收到 '%s'\n", v.c_str());
+            return 2;
+          }
+          res_pid = args[++i];
+        }
+      } else if (a == "--passwd") {
+        passwd_requested = true;
+        while (i + 1 < nargs && args[i + 1].rfind("--", 0) != 0) passwd_args.push_back(args[++i]);
+      } else if (a == "--check") {
+        check_only = true;
+      } else if (a == "--force") {
+        force = true;
+      } else if (a == "--accounts" && i + 1 < nargs) {
+        accounts_dir = args[++i];
+        if (!std::filesystem::path(accounts_dir).is_absolute()) {
+          accounts_dir = util::join_path(util::exe_dir(), accounts_dir);
+        }
+      } else if (a == "--data" && i + 1 < nargs) {
+        cur_data = args[++i];
+      } else if (a == "--port" && i + 1 < nargs) {
+        cur_port = std::atoi(args[++i].c_str());
+      } else if (!a.empty() && a[0] != '-') {
+        // 裸位置参数只可能是 --passwd 的「用户名 密码」；--passwd 后面紧跟
+        // --check 时，它们不会被 --passwd 那个分支吃走，所以在这里收。
+        passwd_args.push_back(a);
+      }
+    }
+    if (cur_requested) return app::print_current_tunnels(cur_data, cur_port);
+    if (res_requested) return app::restart_instance(res_pid);
+    if (passwd_requested) {
+      return app::run_passwd_cli(accounts_dir, passwd_args, check_only, force);
+    }
+  }
+
   // 命令行账号管理
   for (size_t i = 1; i < nargs; ++i) {
     const std::string &a = args[i];
-    if (a == "--add" || a == "--passwd" || a == "--un" || a == "--del" || a == "--list") {
+    if (a == "--add" || a == "--un" || a == "--del" || a == "--list") {
       return run_cli(args);
     }
   }
@@ -1032,6 +1133,15 @@ int main(int argc, char **argv) {
     else if (a == "--accounts" && i + 1 < nargs) g_cfg.accounts_dir = args[++i];
     else if (a == "--public" && i + 1 < nargs) g_cfg.public_dir = args[++i];
     else if (a == "--allow-lan") g_cfg.loopback_only = false;
+    else if (a == "--tunnel-url" && i + 1 < nargs) {
+      g_cfg.tunnel_url = args[++i];
+      g_cfg.tunnel_mode = "url";
+      g_cfg.tunnel_source = "cli";
+    } else if (a == "--no-tunnel") {
+      g_cfg.tunnel_mode = "off";
+      g_cfg.tunnel_url.clear();
+      g_cfg.tunnel_source.clear();
+    }
   }
   if (g_cfg.loopback_only) {
     g_cfg.bind_host = "127.0.0.1";
@@ -1064,6 +1174,25 @@ int main(int argc, char **argv) {
   configure_server(server);
   start_background_tasks();
 
+  // 自述文件：让 cochat --cur / --res 看得见"这个进程是怎么被启动的"。
+  // Windows 上读不到别人的命令行，这份文件是 --res 原样重启的唯一依据，
+  // 所以失败要显式说出来，而不是悄悄没有。
+  {
+    std::string cwd;
+    std::error_code ec;
+    cwd = std::filesystem::current_path(ec).string();
+    if (ec) cwd.clear();
+    std::string rec_err;
+    if (!app::write_instance_record(args.empty() ? std::string("cochat") : args[0], args, cwd,
+                                    g_cfg.data_dir, g_cfg.bind_host, g_cfg.port, g_cfg.tunnel_url,
+                                    rec_err)) {
+      std::fprintf(stderr, "警告: 无法写入实例自述（--cur/--res 会看不到本进程）: %s\n",
+                   rec_err.c_str());
+    } else {
+      app::prune_instance_records();
+    }
+  }
+
   std::printf("\n  局域网对讲机 服务端\n");
   std::printf("  监听      http://%s:%d（对外 https 由 cloudflared 提供）\n", g_cfg.bind_host.c_str(),
               g_cfg.port);
@@ -1072,10 +1201,20 @@ int main(int argc, char **argv) {
   std::printf("  访问控制  %s\n",
               g_cfg.loopback_only ? "仅本机回环（只能经 cloudflared 隧道访问，公网 IP 无法直连）"
                                   : "已允许局域网/公网直连（--allow-lan）");
+  if (!g_cfg.tunnel_url.empty()) {
+    std::printf("  公网地址  %s\n", g_cfg.tunnel_url.c_str());
+  } else if (g_cfg.tunnel_mode == "off") {
+    std::printf("  公网地址  （已声明没有隧道，--cur 会显示「隧道已关闭」）\n");
+  } else {
+    std::printf("  公网地址  （未配置；起了隧道后用 --tunnel-url 告知，--cur 才看得到）\n");
+  }
   std::printf("  存储策略  聊天内容、语音、视频全部只在内存中转发，不写入磁盘\n\n");
 
-  if (!server.listen(g_cfg.bind_host.c_str(), g_cfg.port)) {
-    std::fprintf(stderr, "错误: 无法监听 %s:%d\n", g_cfg.bind_host.c_str(), g_cfg.port);
+  const bool bound = server.listen(g_cfg.bind_host.c_str(), g_cfg.port);
+  app::remove_instance_record();
+  if (!bound) {
+    std::fprintf(stderr, "错误: 无法监听 %s:%d（端口被占用？用 cochat --cur 看有没有实例在跑）\n",
+                 g_cfg.bind_host.c_str(), g_cfg.port);
     return 2;
   }
   return 0;

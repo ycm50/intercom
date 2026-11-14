@@ -1,20 +1,82 @@
 name: build
 
-# 手动触发；tag 号手动输入；所有构建成功后才创建 tag 与 Release。
+# 手动触发；tag 号手动输入；所有构建与测试成功后才创建 tag 与 Release。
+#
+# 发布是**可覆盖**的：同名 tag / release 已存在时会被更新到本次构建的提交，
+# 不会因为"tag 已存在"而失败。重新发版、修完问题想重打同一个版本号时直接用即可。
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '发布 tag（形如 v1.0.0）；留空则只构建产物，不创建 tag/Release'
+        description: '发布 tag（形如 v1.0.0）；留空则只构建产物。同名 tag/release 已存在时会被覆盖'
         required: false
         type: string
+  # 平时也跑：每次 push / PR 至少验证"能编译 + 单测通过"，
+  # 免得只有手动点一次才知道代码坏了。
+  push:
+    branches: [main]
+  pull_request:
 
 permissions:
   contents: write
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # 第一道关卡：单元测试。
+  #
+  # 和产物的构建分开跑，是为了让"逻辑对不对"和"能不能出包"各自独立失败：
+  # 单测红了就不该继续烧 CI 去交叉编译四个架构。
+  # 这里是最普通的原生构建，带 OpenSSL（当对照实现）+ ctest。
+  # ---------------------------------------------------------------------------
+  test:
+    name: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install-toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build ccache libssl-dev
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: test
+          max-size: 300M
+
+      - name: configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCOCHAT_BUILD_TESTS=ON
+
+      - name: compile
+        run: cmake --build build -j "$(nproc)"
+
+      - name: ctest
+        run: ctest --test-dir build --output-on-failure
+
+      # 单测全过之后，再验一次"不带测试的默认构建不引入任何第三方依赖"。
+      # 这是本项目的核心承诺，值得每次自动化确认，而不是靠人记住。
+      - name: default-build-has-no-openssl
+        run: |
+          cmake -S . -B build-plain -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build-plain -j "$(nproc)"
+          if grep -qi '^OPENSSL' build-plain/CMakeCache.txt; then
+            echo "默认构建意外引入了 OpenSSL —— 违反零第三方依赖承诺"
+            grep -i openssl build-plain/CMakeCache.txt
+            exit 1
+          fi
+          echo "默认构建不依赖 OpenSSL，符合预期"
+          ./build-plain/cochat --help | head -3
+
   build:
     name: ${{ matrix.name }}
+    # 单测不过就不出包
+    needs: test
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -106,6 +168,41 @@ jobs:
             $STRIP_BIN --strip-all "$f" || true
           done
 
+      - name: verify-binary
+        env:
+          SYS_PROC: ${{ matrix.sysproc }}
+          SYS_NAME: ${{ matrix.sysname }}
+        run: |
+          BIN=build/cochat
+          [ -f "$BIN" ] || BIN=build/cochat.exe
+          file "$BIN"
+
+          case "$SYS_NAME" in
+            Windows) EXPECT=PE32+ ;;
+            *)       EXPECT=ELF ;;
+          esac
+          if ! file "$BIN" | grep -q "$EXPECT"; then
+            echo "产物类型不是 $EXPECT"; exit 1
+          fi
+
+          case "$SYS_PROC" in
+            aarch64) WANT=aarch64 ;;
+            armv7)   WANT=ARM ;;
+            *)       WANT=x86-64 ;;
+          esac
+          if ! file "$BIN" | grep -qi "$WANT"; then
+            echo "产物架构不含 $WANT"; file "$BIN"; exit 1
+          fi
+
+          # Linux 产物必须是静态的：目标机不装任何运行库也能跑
+          if [ "$EXPECT" = "ELF" ]; then
+            if ldd "$BIN" 2>&1 | grep -q 'not a dynamic executable'; then
+              echo "静态链接确认"
+            else
+              echo "产物不是静态链接："; ldd "$BIN" || true; exit 1
+            fi
+          fi
+
       - name: package
         env:
           ASSET: ${{ matrix.asset }}
@@ -125,9 +222,30 @@ jobs:
           path: out/${{ matrix.asset }}
           if-no-files-found: error
 
+  # ---------------------------------------------------------------------------
+  # 安装脚本自检：install.sh 要能识别二进制头、并真的把文件装到指定前缀。
+  # ---------------------------------------------------------------------------
+  install-scripts:
+    name: install-scripts
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: check-install
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release > /dev/null
+          cmake --build build -j "$(nproc)" > /dev/null
+          cp build/cochat /tmp/cochat-native
+          COCHAT_PREFIX=/tmp/prefix COCHAT_FORCE=1 bash install.sh /tmp/cochat-native
+          test -x /tmp/prefix/cochat
+          echo "安装到自定义前缀成功"
+
   release:
     name: release
-    needs: build
+    needs: [test, build, install-scripts]
     if: inputs.tag != ''
     runs-on: ubuntu-22.04
     steps:
@@ -138,21 +256,56 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: tag-and-release
+      # 覆盖发布：同名 tag / release 已存在时更新它们，而不是失败退出。
+      #
+      # 之前直接用 "git tag -a && git push"：tag 一旦存在（重新发版、修完 bug 想
+      # 重打同一个版本号），push 就被远端拒绝，整个 release job 红掉，而产物其实
+      # 全都构建成功了——这时让人去手工删 tag 再重跑没有意义。
+      - name: tag
         env:
           TAG: ${{ inputs.tag }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ls -l dist
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git tag -a "$TAG" -m "release $TAG"
-          git push origin "$TAG"
+
+          # 指向本次构建的提交：覆盖发布的意义就是"这个 tag 现在指的是这份代码"
+          SHA="${GITHUB_SHA}"
+          echo "tag $TAG -> $SHA"
+
+          git tag -f -a "$TAG" -m "release $TAG" "$SHA"
+          # --force 让已存在的 tag 被改写；普通推送会被拒
+          git push --force origin "refs/tags/$TAG"
+          echo "tag 已更新"
+
+      # 先删掉同名的旧 release（若存在），再重新创建。
+      #
+      # 不依赖 softprops 的 update 行为，是因为它只在"release 已存在且恰好由它
+      # 创建"时才走更新路径；这里显式删除更可预测，也顺带清掉上一轮的旧资产，
+      # 避免同名资产堆积或版本回退后残留。
+      - name: delete-existing-release
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # --cleanup-tag 默认是关的（只删 release、保留 tag），这正是我们要的：
+          # tag 已在上面单独覆盖过。这里不传该参数，避免布尔值写法在不同
+          # gh 版本上被解析成不同意思。
+          if gh release view "$TAG" -R "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "release $TAG 已存在，删除后重建"
+            gh release delete "$TAG" -R "${{ github.repository }}" --yes
+          else
+            echo "release $TAG 不存在，直接创建"
+          fi
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           name: ${{ inputs.tag }}
           generate_release_notes: true
+          make_latest: true
+          # 万一上面的删除没生效（比如权限不足只是警告），也把同名资产覆盖掉，
+          # 而不是让上传因"asset already exists"失败。
+          overwrite_files: true
           files: dist/*
           token: ${{ secrets.GITHUB_TOKEN }}
